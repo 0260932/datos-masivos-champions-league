@@ -1,0 +1,15 @@
+# Entornos y dependencias
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# Variables de entorno y credenciales
+.env
+*.env
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Sistema operativo
+.DS_Store
