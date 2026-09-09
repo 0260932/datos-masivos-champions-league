@@ -13,3 +13,6 @@ __pycache__/
 
 # Sistema operativo
 .DS_Store
+
+data/raw/
+data/processed/
