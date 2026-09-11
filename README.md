@@ -5,7 +5,7 @@ Proyecto del curso de Datos Masivos que analiza partidos y tendencias de la UEFA
 
 ## Integrantes
 - Pablo Rosendo — usuario de GitHub: 0260932
-- Nombre integrante 2 — usuario de GitHub
+- Mateo Flores Sanchez — usuario de GitHub: mateofsan
 - Nombre integrante 3 — usuario de GitHub
 - Nombre integrante 4 — usuario de GitHub
 
