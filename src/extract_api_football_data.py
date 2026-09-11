@@ -32,12 +32,15 @@ def get_api_token():
     return token
 
 
-def fetch_matches():
+def fetch_matches(season=None):
     token = get_api_token()
     headers = {"X-Auth-Token": token}
     url = f"{API_BASE_URL}/competitions/{COMPETITION_CODE}/matches"
+    params = {}
+    if season is not None:
+        params["season"] = season
 
-    response = requests.get(url, headers=headers, timeout=30)
+    response = requests.get(url, headers=headers, params=params, timeout=30)
     response.raise_for_status()
     payload = response.json()
 
