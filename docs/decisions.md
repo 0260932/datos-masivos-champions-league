@@ -53,6 +53,8 @@ Dejar la limpieza dentro del script de ingestión, como en la Entrega 1.
 - La función de corrección de `goals` queda pendiente de reconstruirse
   en `src/processing/` (tarea de Integrante 2, issue #5).
 
+---
+
 ## Procesamiento Champions League (Entrega 2, Integrante 2)
 
 - **Columna `goals` corrupta (UCL_AllTime_Performance_Table.csv):** Excel
