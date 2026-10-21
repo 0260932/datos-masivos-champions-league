@@ -14,7 +14,9 @@ __pycache__/
 # Sistema operativo
 .DS_Store
 
-data/raw/
+data/raw/*
+!data/raw/champions_league_matches_historico_manual.csv
+!data/raw/README_historico_manual.md
 data/processed/
 anaconda_projects/
 data/interim/
