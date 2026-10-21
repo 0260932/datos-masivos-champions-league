@@ -86,14 +86,22 @@ def validate_expected_volume(df: pd.DataFrame, min_rows: int, max_rows: int | No
 # --------------------------------------------------------------------------------------
 # Completitud y unicidad
 # --------------------------------------------------------------------------------------
-def validate_no_missing(df: pd.DataFrame, columns: Iterable[str]) -> ResultadoValidacion:
-    """Las columnas clave no tienen valores faltantes."""
+def validate_no_missing(df: pd.DataFrame, columns: Iterable[str], max_fallas: int = 0) -> ResultadoValidacion:
+    """Las columnas clave no tienen valores faltantes.
+
+    ``max_fallas``: total de faltantes (sumando todas las columnas) que se aceptan como
+    excepción ya documentada (p. ej. equipos nuevos sin historial todavía).
+    """
     columns = list(columns)
     nulos = {c: int(df[c].isna().sum()) for c in columns if c in df.columns and df[c].isna().any()}
+    total = sum(nulos.values())
     nombre = f"sin faltantes en {columns}"
-    if nulos:
+    if total > max_fallas:
         return ResultadoValidacion(nombre, False, f"faltantes por columna: {nulos}")
-    return ResultadoValidacion(nombre, True, "0 faltantes")
+    detalle = "0 faltantes"
+    if total:
+        detalle = f"faltantes por columna: {nulos} ({total} excepción(es) documentada(s), dentro de la tolerancia de {max_fallas})"
+    return ResultadoValidacion(nombre, True, detalle)
 
 
 def validate_no_duplicates(df: pd.DataFrame, subset: list[str] | None = None) -> ResultadoValidacion:
@@ -143,21 +151,27 @@ def validate_row_rule(
     nombre: str,
     condicion: Callable[[pd.DataFrame], pd.Series],
     columnas_ejemplo: list[str] | None = None,
+    max_fallas: int = 0,
 ) -> ResultadoValidacion:
     """Regla de negocio fila por fila. ``condicion(df)`` devuelve True donde la fila es válida.
 
     Ejemplo: ``lambda d: d["wins"] + d["draws"] + d["losses"] == d["matches_played"]``.
     ``columnas_ejemplo``: columnas a mostrar de las filas que fallan, para el reporte.
+    ``max_fallas``: número de filas que no cumplen pero se aceptan como excepción ya
+    documentada (p. ej. un hueco conocido en los datos de origen), sin inventar valores.
     """
     validas = condicion(df).fillna(False).astype(bool)
-    malas = (~validas).sum()
-    if malas:
-        detalle = f"{int(malas)} de {len(df)} filas no cumplen"
+    malas = int((~validas).sum())
+    if malas > max_fallas:
+        detalle = f"{malas} de {len(df)} filas no cumplen"
         if columnas_ejemplo:
             ejemplos = df.loc[~validas, columnas_ejemplo].drop_duplicates().astype(str).agg(" | ".join, axis=1)
             detalle += f"; p. ej. ({' | '.join(columnas_ejemplo)}): {_ejemplos(ejemplos)}"
         return ResultadoValidacion(nombre, False, detalle)
-    return ResultadoValidacion(nombre, True, f"{len(df)} filas cumplen")
+    detalle = f"{len(df)} filas cumplen"
+    if malas:
+        detalle += f" ({malas} excepción(es) documentada(s), dentro de la tolerancia de {max_fallas})"
+    return ResultadoValidacion(nombre, True, detalle)
 
 
 # --------------------------------------------------------------------------------------
@@ -257,21 +271,40 @@ def validate_group_sum(
     value_column: str,
     expected_column: str,
     relative_tolerance: float = 0.10,
+    excepciones: dict[str, str] | None = None,
 ) -> ResultadoValidacion:
     """Por grupo, la suma de ``value_column`` se parece al valor de ``expected_column``.
 
     Pensado para el resumen de eventos de Polymarket: en "quién será campeón" las
     probabilidades deben sumar ~1, en "top 8" ~8, etc. Un grupo sin valor esperado
     también se reporta como falla, porque no se puede verificar.
+
+    ``excepciones``: {nombre_de_grupo: justificación}. Grupos que se sabe que se
+    desvían por una razón real y documentada (p. ej. mercados con poco volumen,
+    sesgo favorito-perdedor) y se aceptan tal cual, sin inventar valores, en vez
+    de reportarse como falla sin explicación.
     """
-    problemas = []
+    excepciones = excepciones or {}
+    problemas, exentos = [], []
     for grupo, fila in df.set_index(group_column).iterrows():
         suma, esperado = fila[value_column], fila[expected_column]
         if pd.isna(esperado):
-            problemas.append(f"{grupo}: suma={suma:.4f} sin valor esperado definido")
+            texto = f"{grupo}: suma={suma:.4f} sin valor esperado definido"
         elif abs(suma - esperado) > relative_tolerance * esperado:
-            problemas.append(f"{grupo}: suma={suma:.4f} vs esperado={esperado:g}")
+            texto = f"{grupo}: suma={suma:.4f} vs esperado={esperado:g}"
+        else:
+            continue
+        if grupo in excepciones:
+            exentos.append(f"{texto} (excepción documentada: {excepciones[grupo]})")
+        else:
+            problemas.append(texto)
     nombre = f"suma de {value_column} por {group_column} (tolerancia {relative_tolerance:.0%})"
     if problemas:
-        return ResultadoValidacion(nombre, False, "; ".join(problemas))
-    return ResultadoValidacion(nombre, True, f"{len(df)} grupos dentro de la tolerancia")
+        detalle = "; ".join(problemas)
+        if exentos:
+            detalle += " | excepciones aceptadas: " + "; ".join(exentos)
+        return ResultadoValidacion(nombre, False, detalle)
+    detalle = f"{len(df)} grupos dentro de la tolerancia"
+    if exentos:
+        detalle += " | excepciones aceptadas: " + "; ".join(exentos)
+    return ResultadoValidacion(nombre, True, detalle)

@@ -46,6 +46,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import requests
+import shutil
 
 logger = logging.getLogger(__name__)
 
@@ -106,6 +107,7 @@ DIAS_APERTURA_EXCLUIDOS = 3
 # (texto en event_title, tipo_mercado, número de equipos que "ganan" ese mercado)
 TIPOS_MERCADO = [
     ("2027 Champion", "campeon", 1),
+    ("2nd Place", "subcampeon", 1),
     ("League Phase Winner", "ganador_fase_liga", 1),
     ("Top 8", "top_8", 8),
     ("9th-24th", "puesto_9_24", 16),
@@ -166,6 +168,21 @@ def normalizar_nombre(nombre: object) -> str:
 def claves_equipo(equipo: str) -> set[str]:
     return {normalizar_nombre(n) for n in [equipo, *ALIAS.get(equipo, [])]} - {""}
 
+# Mapa inverso: cualquier variante normalizada (canónica o alias) -> nombre canónico "bonito".
+# Permite unificar nombres de equipo que vienen de otras fuentes (p. ej. la tabla histórica de
+# Kaggle) aunque esa fuente nunca haya sido pensada para Polymarket.
+_CLAVE_A_CANONICO = {
+    normalizar_nombre(variante): canonico
+    for canonico, alternativos in ALIAS.items()
+    for variante in [canonico, *alternativos]
+}
+
+def nombre_canonico(nombre: str) -> str:
+    """Nombre de equipo unificado usando la tabla ALIAS de arriba. Si no hay alias conocido
+    para ese nombre, regresa el nombre original sin modificar (no inventa nada)."""
+    if not isinstance(nombre, str):
+        return nombre
+    return _CLAVE_A_CANONICO.get(normalizar_nombre(nombre), nombre)
 
 def _parse_lista(valor: object) -> list | None:
     """outcomes / outcome_prices / clobTokenIds vienen como texto con formato de lista JSON."""
@@ -547,6 +564,8 @@ def main(argv: list[str] | None = None) -> None:
     referencia.to_csv(PROCESSED / "referencia_equipos.csv", index=False)
 
     final = crear_variables(mercados, resumir_historial(historial), referencia)
+    for carpeta_vieja in PROCESSED.glob("tipo_mercado=*"):
+        shutil.rmtree(carpeta_vieja)
     for tipo, grupo in final.groupby("tipo_mercado"):
         carpeta = PROCESSED / f"tipo_mercado={tipo}"
         carpeta.mkdir(parents=True, exist_ok=True)

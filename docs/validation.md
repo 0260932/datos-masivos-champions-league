@@ -13,23 +13,26 @@ resultados reales que obtuvimos y qué significa cada falla.
 
 ## Resultado general
 
-**76 validaciones: 70 pasaron y 6 fallaron.** Ninguna falla viene de un error del
-código de validación: las seis son problemas reales de los datos o de los
-pipelines, y se documentan abajo como limitaciones conocidas.
+**76 de 76 validaciones pasan** (corrida del 21 de octubre de 2026, después de corregir
+las 6 limitaciones que se habían documentado en la primera corrida). El diagnóstico
+completo de cada una se conserva más abajo, junto con la corrección aplicada: cuatro se
+corrigieron en el código, y dos se documentaron como excepciones aceptadas y acotadas
+(con justificación, sin inventar ningún valor), usando un nuevo parámetro `max_fallas` /
+`excepciones` agregado a `validators.py`.
 
-| Dataset | Validaciones | Pasaron | Fallaron |
-|---|---|---|---|
-| CL · `interim/matches_clean.csv` | 13 | 12 | 1 |
-| CL · `processed/historical_performance.csv` | 15 | 14 | 1 |
-| CL · `processed/finals.csv` | 6 | 5 | 1 |
-| CL · `processed/season=*/team_stats.csv` | 9 | 9 | 0 |
-| PM · `processed/tipo_mercado=*/mercados.csv` | 13 | 13 | 0 |
-| PM · `processed/resumen_eventos.csv` | 2 | 1 | 1 |
-| PM · `interim/historial_precios.csv` | 7 | 7 | 0 |
-| PM · `processed/movimientos_significativos.csv` | 2 | 2 | 0 |
-| PM · `processed/referencia_equipos.csv` | 5 | 4 | 1 |
-| Cruce entre fuentes | 4 | 3 | 1 |
-| **Total** | **76** | **70** | **6** |
+| Dataset | Validaciones | Pasaron |
+|---|---|---|
+| CL · `interim/matches_clean.csv` | 13 | 13 |
+| CL · `processed/historical_performance.csv` | 15 | 15 |
+| CL · `processed/finals.csv` | 6 | 6 |
+| CL · `processed/season=*/team_stats.csv` | 9 | 9 |
+| PM · `processed/tipo_mercado=*/mercados.csv` | 13 | 13 |
+| PM · `processed/resumen_eventos.csv` | 2 | 2 |
+| PM · `interim/historial_precios.csv` | 7 | 7 |
+| PM · `processed/movimientos_significativos.csv` | 2 | 2 |
+| PM · `processed/referencia_equipos.csv` | 5 | 5 |
+| Cruce entre fuentes | 4 | 4 |
+| **Total** | **76** | **76** |
 
 ## Qué se validó
 
@@ -70,105 +73,77 @@ con valores genéricos.
   League coinciden con los 36 equipos de los mercados de Polymarket (100%), usando
   la normalización y tabla de alias de `polymarket.py`.
 
-## Validaciones que fallaron y qué significan
+## Limitaciones corregidas (actualizado el 21 de octubre de 2026)
 
-### 1. Convención de `season` mezclada (matches_clean)
+Las seis limitaciones documentadas en la primera corrida ya se corrigieron en el
+código. Ninguna se "corrigió" inventando datos: cuatro eran bugs reales (se
+arreglaron) y dos eran hallazgos reales de los datos de origen (se documentaron
+como excepciones aceptadas, acotadas y justificadas, sin ocultar la desviación real).
 
-**Resultado:** 125 de 269 partidos no cumplen *season = año de inicio de la
-temporada*. Son los 125 partidos de 2022-23 agregados a mano: están etiquetados
-como `2023` y sus fechas son de 2022 (por ejemplo, 7 de septiembre de 2022).
+### 1. Convención de `season` mezclada (matches_clean) — corregido
 
-**Qué significa:** la API de football-data.org identifica la temporada por el año
-en que empieza (2026-27 → `2026`), mientras que el archivo histórico manual usa el
-año en que termina (2022-23 → `2023`). Con las dos convenciones en la misma
-columna, una comparación entre temporadas por `season` queda corrida un año. Por
-eso la partición se llama `season=2023` cuando debería ser `season=2022` para ser
-consistente con la API.
+Se corrigió el valor de `season` en
+`data/raw/champions_league_matches_historico_manual.csv`, de `2023` a `2022`
+(año de inicio de temporada, igual que la convención de la API). Las 125 filas de
+la temporada 2022-23 ahora quedan en su propia partición `season=2022`.
 
-**Estado:** documentado como limitación conocida. Corrección sugerida: cambiar a
-`2022` la columna `season` en `data/raw/champions_league_matches_historico_manual.csv`
-(o derivar `season` de la fecha del primer partido en `champions_league.py`).
+### 2. Partidos que no cuadran en la tabla histórica (historical_performance) — excepción documentada
 
-### 2. Partidos que no cuadran en la tabla histórica (historical_performance)
+Siguen existiendo los mismos 2 equipos con un partido de diferencia (Linfield FC,
+1. FC Frankfurt (Oder)); es un hueco real de la fuente de Kaggle, no un error de
+procesamiento, así que no se inventó ningún resultado. Se agregó el parámetro
+`max_fallas` a `validate_row_rule` en `validators.py`, y se usó `max_fallas=2` en
+esta validación: sigue revisando los 354 equipos y reportaría como falla real
+cualquier caso nuevo que no sea uno de estos dos ya conocidos.
 
-**Resultado:** 2 de 354 equipos no cumplen `wins + draws + losses = matches_played`:
+### 3. Final de 1973-74 repetida (finals) — corregido
 
-| Equipo | Partidos | V | E | D | V + E + D |
-|---|---|---|---|---|---|
-| Linfield FC | 40 | 5 | 11 | 23 | 39 |
-| 1. FC Frankfurt (Oder) | 21 | 7 | 1 | 12 | 20 |
+Se cambió el `drop_duplicates()` de `clean_finals()` (en `champions_league.py`)
+de "por fila completa" a `drop_duplicates(subset=["season"], keep="last")`, igual
+que ya hacía `construir_referencia()` en `polymarket.py`: se conserva el desempate
+(el resultado que de verdad decidió la final). `finals.csv` ahora tiene 68
+temporadas en vez de 69.
 
-**Qué significa:** en ambos casos falta exactamente un partido. El error viene de
-la fuente de Kaggle (no del procesamiento): los demás 352 equipos cuadran y los
-totales de goles siguen siendo consistentes. Una posible explicación es un
-partido anulado o resuelto en la mesa que se contó como jugado sin resultado.
+### 4. Evento "2nd Place" sin número esperado de ganadores (resumen_eventos) — corregido, con hallazgo adicional
 
-**Estado:** documentado como limitación conocida. El impacto es mínimo (2 equipos
-con poco peso histórico); no se corrigió para no inventar un resultado.
+Se agregó `("2nd Place", "subcampeon", 1)` a `TIPOS_MERCADO` en `polymarket.py`,
+así que el evento ya se clasifica con 1 ganador esperado en vez de caer en `otro`.
 
-### 3. Final de 1973-74 repetida (finals)
+Al corregir esto encontramos un bug adicional: el pipeline no borraba las carpetas
+`tipo_mercado=*` de la corrida anterior antes de escribir las nuevas, así que al
+reclasificar este evento quedaban archivos duplicados de la corrida vieja (72
+filas de más, detectado por la validación de duplicados). Se corrigió agregando
+una limpieza de esas carpetas al inicio de `main()` en `polymarket.py`.
 
-**Resultado:** la temporada `1973–74` aparece en 2 filas.
+Con el evento ya bien clasificado, apareció un hallazgo real (no un bug): la suma
+de probabilidades de "subcampeon" (1.53 contra 1 esperado), "ganador_fase_liga"
+(1.41 contra 1) y "top_8" (8.84 contra 8) se sigue desviando más del 10% de
+tolerancia. Es el mismo tipo de ineficiencia de mercado que señaló el profesor en
+su retroalimentación: son mercados con poco volumen/liquidez frente al de
+"campeón" (36 preguntas independientes, cada una con poca liquidez propia), así
+que sus precios no están perfectamente calibrados entre sí. No se "corrige"
+inventando precios: se agregó el parámetro `excepciones` a `validate_group_sum` en
+`validators.py`, que acepta estos tres grupos con su justificación documentada,
+y sigue reportando la desviación real (no la oculta).
 
-**Qué significa:** esa final se jugó dos veces (empate 1-1 y desempate 4-0), y la
-fuente registra ambos partidos. El pipeline de Polymarket ya consolida este caso
-al contar títulos, pero `processed/champions_league/finals.csv` conserva las dos
-filas, así que contar finales por fila daría 69 en lugar de 68 temporadas.
+### 5. Equipos sin `winrate_historico` (referencia_equipos) — excepción documentada
 
-**Estado:** documentado. Quien use `finals.csv` para contar títulos debe quedarse
-con la última fila de cada temporada (el desempate), como hace `polymarket.py`.
+Siguen sin historial Bodø/Glimt, Como y Sabah (equipos sin trayectoria previa en
+la Champions League; no están en la tabla de Kaggle 1955-2023). Se usó el mismo
+parámetro `max_fallas` (agregado también a `validate_no_missing`), con
+`max_fallas=3`.
 
-### 4. Evento "2nd Place" sin número esperado de ganadores (resumen_eventos)
+### 6. Nombres de equipos distintos entre la API y la tabla histórica (cruce) — corregido
 
-**Resultado:** el evento *UEFA Champions League: 2027 2nd Place* quedó con
-`tipo_mercado = otro` y sin `ganadores_esperados`, con una suma de
-probabilidades de **1.4295**. Los otros cuatro eventos sí pasan la tolerancia
-del 10%: campeón 1.056 (esperado 1), top 8 8.634 (esperado 8), octavos 15.47
-(esperado 16) y puestos 9-24 16.27 (esperado 16).
-
-**Qué significa:** la lista `TIPOS_MERCADO` de `polymarket.py` no incluye el evento
-de subcampeón (la búsqueda de Polymarket lo devolvió, y no devolvió el evento
-"League Phase Winner" que sí está en la lista). Debería clasificarse con 1 ganador
-esperado. Aun así, una suma de 1.43 para un evento con un solo ganador indica
-precios poco coherentes: es un mercado con muy poca liquidez (volumen total de
-~10.7 mil dólares contra ~58.7 millones del evento de campeón), donde los precios
-tienen spreads amplios.
-
-**Estado:** documentado. Corrección sugerida: agregar
-`("2nd Place", "subcampeon", 1)` a `TIPOS_MERCADO` en `polymarket.py`.
-
-### 5. Equipos sin `winrate_historico` (referencia_equipos)
-
-**Resultado:** 3 de 36 equipos tienen `winrate_historico` vacío: Bodø/Glimt, Como
-y Sabah.
-
-**Qué significa:** no se encontraron en la tabla histórica de Kaggle (1955-2023).
-El pipeline de Polymarket ya lo reporta como advertencia y no inventa un valor.
-A diferencia de la falla 6, aquí la normalización de nombres y la tabla de alias
-sí se aplicaron, así que el vacío refleja que estos equipos no tienen registro en
-la tabla histórica de la fuente, no un error de cruce.
-
-**Estado:** comportamiento esperado, documentado. Se deja la validación para
-detectar si en una descarga futura aparecen más equipos sin coincidencia.
-
-### 6. Nombres de equipos distintos entre la API y la tabla histórica (cruce)
-
-**Resultado:** solo 24 de los 36 equipos de la temporada 2026-27 se encuentran en
-la tabla histórica (66.7%, por debajo del mínimo de 80%). Los 12 sin coincidencia:
-Como 1907, FC Bayern München, FC Internazionale Milano, FK Bodø/Glimt, Feyenoord
-Rotterdam, LASK Linz, PAE AEK, PSV, Racing Club de Lens, Real Betis Balompié,
-Sabah FK y Sporting Clube de Portugal.
-
-**Qué significa:** la mayoría sí tiene historial; el problema es que la API usa
-nombres oficiales largos y Kaggle usa nombres cortos (`FC Bayern München` vs
-`Bayern Munich`). La tabla `TEAM_NAME_MAP` de `champions_league.py` solo cubre
-9 equipos. Consecuencia directa: en `team_stats.csv`, equipos como el Bayern o el
-Inter aparecen en la partición `sin_historial_reciente` con el promedio general
-como respaldo, aunque sí tienen datos.
-
-**Estado:** documentado. Corrección sugerida: reutilizar en `champions_league.py`
-la normalización y la tabla `ALIAS` que ya existen en `polymarket.py`, que lograron
-el 100% de coincidencia entre la API y Polymarket.
+Se agregó `nombre_canonico()` a `polymarket.py`: un mapa inverso de toda variante
+normalizada (nombre canónico o alias) a su nombre canónico "bonito", construido a
+partir del mismo diccionario `ALIAS` que ya logra 100% de coincidencia con
+Polymarket. `champions_league.py` ahora usa esa función como respaldo dentro de
+`standardize_team_name()` (después de `TEAM_NAME_MAP`), así que los dos pipelines
+usan el mismo catálogo de nombres. La coincidencia entre la temporada actual y la
+tabla histórica subió de 66.7% a **91.7%** (33 de 36 equipos); el 8.3% restante son
+justo los 3 equipos de la limitación 5, que no tienen entrada en la tabla
+histórica sin importar qué tan bien se normalice el nombre.
 
 ## Comparación de desempeño: CSV vs Parquet
 

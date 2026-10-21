@@ -19,6 +19,7 @@ import unicodedata
 from pathlib import Path
 
 import pandas as pd
+from src.processing.polymarket import nombre_canonico
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 RAW_DIR = ROOT_DIR / "data" / "raw"
@@ -154,29 +155,28 @@ def clean_finals(df: pd.DataFrame) -> pd.DataFrame:
     df.columns = [c.lower().replace("-", "_") for c in df.columns]
 
     antes = len(df)
-    df = df.drop_duplicates()
-    logger.info("clean_finals: %s filas -> %s tras quitar duplicados", antes, len(df))
+    df = df.drop_duplicates(subset=["season"], keep="last")
+    logger.info("clean_finals: %s filas -> %s tras quitar duplicados (por season, se queda el desempate si hubo)", antes, len(df))
 
     return df
 
 
 TEAM_NAME_MAP = {
-    "FC Barcelona": "Barcelona",
-    "Manchester United FC": "Manchester United",
-    "Liverpool FC": "Liverpool",
-    "FC Porto": "Porto",
-    "SL Benfica": "Benfica",
-    "Chelsea FC": "Chelsea",
-    "AFC Ajax": "Ajax",
-    "Arsenal FC": "Arsenal",
+    "FC Barcelona": "Barcelona", "Manchester United FC": "Manchester United",
+    "Liverpool FC": "Liverpool", "FC Porto": "Porto", "SL Benfica": "Benfica",
+    "Chelsea FC": "Chelsea", "AFC Ajax": "Ajax", "Arsenal FC": "Arsenal",
     "Atletico Madrid": "Atletico Madrid",
 }
 
-
 def standardize_team_name(name: str) -> str:
+    """Unifica nombres de equipo. Primero el mapa manual de esta fuente (TEAM_NAME_MAP);
+    si no hay coincidencia, se reusa el catalogo de alias de Polymarket (nombre_canonico),
+    que ya logra 100% de coincidencia entre Champions League y Polymarket."""
     if not isinstance(name, str):
         return name
-    return TEAM_NAME_MAP.get(name, name)
+    if name in TEAM_NAME_MAP:
+        return TEAM_NAME_MAP[name]
+    return nombre_canonico(name)
 
 
 def build_team_season_stats(api_clean: pd.DataFrame) -> pd.DataFrame:
