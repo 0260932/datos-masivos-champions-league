@@ -52,3 +52,25 @@ Dejar la limpieza dentro del script de ingestión, como en la Entrega 1.
   copias crudas a `data/raw/`.
 - La función de corrección de `goals` queda pendiente de reconstruirse
   en `src/processing/` (tarea de Integrante 2, issue #5).
+
+## Procesamiento Champions League (Entrega 2, Integrante 2)
+
+- **Columna `goals` corrupta (UCL_AllTime_Performance_Table.csv):** Excel
+  interpreto "goals_for:goals_against" como tiempo [h]:mm:ss, acarreando
+  a horas cuando goals_against > 60. Se reconstruyo resolviendo
+  k = (H - MM - Dif) / 61, goals_against = 60k + MM, goals_for = H - k.
+  Verificado en el 100% de las 354 filas (k entero no negativo,
+  goals_for - goals_against == Dif).
+- **Columna `Pt.` descartada:** identica a `Dif` en el 100% de las filas
+  (dato duplicado/mal etiquetado en la fuente).
+- **Equipos sin historial reciente:** se marcan con `tiene_historial_reciente=0`
+  y se les asigna como respaldo el promedio general de goles a
+  favor/en contra de todos los equipos en la tabla historica de Kaggle.
+- **Formato de exportacion:** CSV (no Parquet) para `data/interim/` y
+  `data/processed/`, por simplicidad; la comparacion formal de
+  desempeno entre formatos la hace el Integrante 4.
+- **Temporada historica adicional:** se agrego la temporada 2022-23
+  completa (fase de grupos + eliminatorias, 125 partidos), obtenida via
+  busqueda asistida por IA en RSSSF (https://rsssf.org/ec/ec202223.html).
+  Se eligio 1 temporada (no 3-5) para priorizar datos bien verificados
+  sobre cantidad.
