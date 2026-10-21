@@ -13,10 +13,19 @@ Proyecto del curso de Datos Masivos que analiza partidos y tendencias de la UEFA
 ¿Cómo se compara el desempeño de los equipos en la temporada actual de la Champions League (fuente API) contra su historial en finales del torneo (fuente Kaggle)?
 
 ## Arquitectura
-Fuente 1 (API football-data.org, temporada 2026) y Fuente 2 (Kaggle, finales históricas 1955-2023) alimentan data/raw/, que se analiza en notebooks/01_extraccion_y_diagnostico.ipynb.
-- Extracción: scripts independientes en src/, uno por fuente.
-- Credenciales: variables de entorno vía archivo .env (no versionado).
-- Análisis: notebook en notebooks/01_extraccion_y_diagnostico.ipynb.
+Fuente 1 (API football-data.org, temporada actual), Fuente 2 (Kaggle, históricos 1955-2023) y Fuente 3 (Polymarket, mercados públicos de predicción, agregada en la Entrega 2) alimentan `data/raw/`. Desde ahí, un pipeline de procesamiento por capas limpia y transforma los datos:
+- **Ingestión:** `src/ingestion/`, un script por fuente, ejecutables por
+  terminal (ej. `python -m src.ingestion.download_data`). Evitan
+  descargas innecesarias (omiten si ya existe copia de hoy) y registran
+  todo en `logs/ingestion.log`.
+- **Procesamiento:** `src/processing/` (limpieza, estandarización,
+  variables).
+- **Validación:** `src/validation/` (columnas, tipos, nulos, duplicados,
+  rangos, consistencia).
+- **Credenciales:** variables de entorno vía archivo `.env` (no
+  versionado). Polymarket no requiere credenciales (API pública).
+- **Análisis:** notebooks en `notebooks/`.
+- **Decisiones del equipo documentadas en** `docs/decisions.md`.
 
 ## Requisitos
 - Python 3.10 o superior
@@ -33,13 +42,13 @@ Fuente 1 (API football-data.org, temporada 2026) y Fuente 2 (Kaggle, finales his
 ## Obtención de datos
 Las credenciales nunca se suben al repositorio. Configúralas así:
 1. cp .env.example .env
-2. Edita .env y coloca tu FOOTBALL_DATA_API_TOKEN, KAGGLE_USERNAME y KAGGLE_KEY reales.
+2. Edita .env y coloca tu FOOTBALL_DATA_API_TOKEN, KAGGLE_USERNAME y KAGGLE_KEY reales (Polymarket no necesita credenciales).
 
 Luego descarga los datos:
-1. python src/extract_api_football_data.py
-2. python src/extract_kaggle_historical.py
+1. python -m src.ingestion.download_data
+2. python -m src.ingestion.download_polymarket
 
-El segundo script, además de descargar los CSV a data/raw/, genera data/processed/UCL_AllTime_Performance_Table_clean.csv con la columna goals corregida (ver Limitaciones).
+Ambos comandos guardan copias crudas en data/raw/, evitan volver a descargar si ya existe una copia de hoy (usa --force para forzar), y registran el proceso en logs/ingestion.log.
 
 ## Ejecución
 jupyter notebook notebooks/01_extraccion_y_diagnostico.ipynb
@@ -53,12 +62,17 @@ Si usas un entorno virtual, registra el kernel antes de abrir el notebook:
 Con los primeros 8 partidos finalizados de la fase de liga 2026, el equipo local promedió 2.25 goles por partido contra 1.62 del visitante (ver notebooks/01_extraccion_y_diagnostico.ipynb, sección "Primera evidencia", y la gráfica en docs/goles_local_vs_visitante.png).
 
 ## Estructura del repositorio
-- data/raw/: datos crudos descargados por los scripts (ignorado en git)
-- data/processed/: datos corregidos generados por los scripts (ignorado en git)
-- docs/: gráficas e imágenes generadas
+- data/raw/: datos crudos descargados por los scripts de ingestión (ignorado en git)
+- data/interim/: datos parcialmente limpiados/transformados (ignorado en git)
+- data/processed/: datos listos para análisis (ignorado en git)
+- docs/: decisiones (decisions.md), validaciones, gráficas e imágenes generadas
+- logs/: logs de ejecución (ignorado en git, excepto la carpeta)
 - notebooks/01_extraccion_y_diagnostico.ipynb
-- src/extract_api_football_data.py
-- src/extract_kaggle_historical.py
+- notebooks/02_modelo_prediccion_xgboost.ipynb
+- src/ingestion/: scripts de descarga (uno por fuente)
+- src/processing/: pipeline de limpieza y transformación
+- src/validation/: validaciones de calidad de datos
+- tests/: pruebas automáticas
 - .env.example
 - .gitignore
 - requirements.txt
