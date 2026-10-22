@@ -187,3 +187,37 @@ que obligaron a tomar las decisiones siguientes.
   liquidez real).
 - Cuando el Integrante 2 fusione su procesamiento (issue #5), la
   referencia puede reemplazarse por métricas de la temporada actual.
+
+
+## Extensión del histórico manual a 5 temporadas (2026-10-21/22)
+
+**Decisión:** ampliar `champions_league_matches_historico_manual.csv` de 1
+temporada (2022-23) a 5 temporadas consecutivas (2021-22, 2022-23, 2023-24,
+2024-25, 2025-26), partido por partido, mismas columnas que la API. Responde
+directamente al punto 10 del feedback del profesor sobre Entrega 1: usar a
+Claude para extender la base histórica por investigación web, dado que el
+plan gratuito de football-data.org solo cubre 2 temporadas.
+
+**Cómo se hizo:** 4 agentes de investigación en paralelo (uno por temporada),
+cada uno usando RSSSF (temporadas de fase de grupos: 2021-22, 2023-24) o
+Wikipedia + UEFA.com (temporadas de fase de liga: 2024-25, 2025-26) como
+fuente primaria, con verificación cruzada contra una segunda fuente
+independiente. Antes de integrar los datos se validó automáticamente:
+conteo de partidos esperado por temporada (125 en formato de grupos, 189 en
+formato de fase de liga), sin `match_id` duplicados, sin un equipo jugando
+contra sí mismo, marcadores numéricos en rango. Detalle de fuentes por
+temporada en `data/raw/README_historico_manual.md`.
+
+**Limitación documentada:** la temporada 2025-26 es posterior a la fecha de
+corte de entrenamiento de Claude, así que depende por completo de la
+búsqueda web de esta sesión (no se pudo verificar también contra el
+conocimiento previo del modelo, a diferencia de las otras 4 temporadas). Se
+recomienda una revisión manual de muestra.
+
+**Consecuencia:** `data/raw/champions_league_matches_historico_manual.csv`
+pasó de 125 a 753 filas; `data/interim/champions_league/matches_clean.csv`
+pasó de 269 a 897 filas (dentro del rango esperado por la validación de
+volumen, [100, 1000]). Las temporadas 2024-25 y 2025-26 ya usan el formato
+de fase de liga de 36 equipos (`stage=LEAGUE_STAGE`, con una ronda adicional
+`KNOCKOUT_PLAYOFFS` para los lugares 9-24), el mismo formato que la API usa
+para la temporada actual 2026-27.
