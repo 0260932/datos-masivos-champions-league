@@ -84,6 +84,8 @@ Requiere haber corrido antes `python -m src.processing.champions_league`. Cada e
 streamlit run streamlit_app.py
 ```
 
+También funciona con La Liga: en el dashboard elige "La Liga" en la barra lateral, y en la terminal usa `python -m src.live.tracker --competicion PD`. El modelo está construido con datos de Champions, así que en La Liga sus probabilidades antes del partido son poco confiables.
+
 Para abrirlo desde internet (gratis) con Streamlit Community Cloud:
 1. Sube el repo a GitHub (tu fork). `data/live/modelo/` sí se versiona: es el snapshot de estadísticas que usa el modelo en la nube. Actualízalo con `python -m src.live.modelo` después de reprocesar datos.
 2. En share.streamlit.io, entra con tu cuenta de GitHub, "Create app", elige el repo, la rama y `streamlit_app.py`.

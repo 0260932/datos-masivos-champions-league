@@ -35,7 +35,7 @@ from pathlib import Path
 
 import requests
 
-from src.ingestion.extract_api_football_data import API_BASE_URL, COMPETITION_CODE, get_api_token
+from src.ingestion.extract_api_football_data import API_BASE_URL, get_api_token
 from src.live.modelo import (
     StrengthModel,
     kelly_fraction,
@@ -51,7 +51,11 @@ LIVE_DIR.mkdir(parents=True, exist_ok=True)
 LOGS_DIR.mkdir(parents=True, exist_ok=True)
 
 GAMMA_EVENTS_URL = "https://gamma-api.polymarket.com/events"
-POLYMARKET_TAG = "ucl"
+# codigo de football-data.org -> (nombre, tag de Polymarket)
+COMPETICIONES = {
+    "CL": ("Champions League", "ucl"),
+    "PD": ("La Liga", "la-liga"),
+}
 CLOB_HISTORY_URL = "https://clob.polymarket.com/prices-history"
 
 ESTADOS_EN_JUEGO = {"IN_PLAY", "PAUSED", "LIVE"}
@@ -86,14 +90,14 @@ def estimate_minute(utc_date: datetime, status: str, ahora: datetime) -> int:
     return min(95, int(transcurrido - 17))
 
 
-def fetch_live_matches(minutos_previa: int):
-    """Partidos de Champions en juego (y los que empiezan en <= minutos_previa)."""
+def fetch_live_matches(minutos_previa: int, competicion: str = "CL"):
+    """Partidos de la competicion en juego (y los que empiezan en <= minutos_previa)."""
     ahora = datetime.now(timezone.utc)
     params = {
         "dateFrom": (ahora - timedelta(days=1)).date().isoformat(),
         "dateTo": (ahora + timedelta(days=1, minutes=minutos_previa)).date().isoformat(),
     }
-    url = f"{API_BASE_URL}/competitions/{COMPETITION_CODE}/matches"
+    url = f"{API_BASE_URL}/competitions/{competicion}/matches"
     response = requests.get(
         url, headers={"X-Auth-Token": get_api_token()}, params=params, timeout=20
     )
@@ -140,7 +144,8 @@ def _to_float(valor):
 class PolymarketMoneyline:
     """Encuentra el evento de Polymarket de cada partido y lee sus precios."""
 
-    def __init__(self):
+    def __init__(self, competicion="CL"):
+        self.tag = COMPETICIONES[competicion][1]
         self.eventos = []
         self.cargado_en = 0.0
         self.slug_por_partido = {}
@@ -150,7 +155,7 @@ class PolymarketMoneyline:
         while True:
             r = requests.get(
                 GAMMA_EVENTS_URL,
-                params={"tag_slug": POLYMARKET_TAG, "closed": "false", "limit": 100, "offset": offset},
+                params={"tag_slug": self.tag, "closed": "false", "limit": 100, "offset": offset},
                 timeout=20,
             )
             r.raise_for_status()
@@ -257,7 +262,9 @@ def evaluate(partido, probs, precios, edge_min):
     filas = []
     for lado, p in zip(("home", "draw", "away"), probs):
         ask = precios.get(lado, {}).get("ask")
-        if ask is None or not 0.01 <= ask <= 0.99:
+        if partido.get("status") == "FINISHED":
+            senal, edge = "CERRADO", None  # ya no se puede entrar
+        elif ask is None or not 0.01 <= ask <= 0.99:
             senal, edge = "SIN MERCADO", None
         else:
             edge = p - ask
@@ -344,9 +351,10 @@ def save_rows(partido, filas):
 # ---------------------------------------------------------------------------
 
 class Tracker:
-    def __init__(self, edge_min, sonido, minutos_previa):
+    def __init__(self, edge_min, sonido, minutos_previa, competicion="CL"):
         self.modelo = StrengthModel()
-        self.polymarket = PolymarketMoneyline()
+        self.competicion = competicion
+        self.polymarket = PolymarketMoneyline(competicion)
         self.edge_min = edge_min
         self.sonido = sonido
         self.minutos_previa = minutos_previa
@@ -370,9 +378,9 @@ class Tracker:
 
     def tick(self):
         print(f"\n=== {datetime.now().strftime('%H:%M:%S')} ===")
-        partidos = fetch_live_matches(self.minutos_previa)
+        partidos = fetch_live_matches(self.minutos_previa, self.competicion)
         if not partidos:
-            print("No hay partidos de Champions en juego en este momento.")
+            print(f"No hay partidos de {COMPETICIONES[self.competicion][0]} en juego en este momento.")
             return
         for partido in partidos:
             try:
@@ -428,7 +436,9 @@ class DemoTracker(Tracker):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Tracker en vivo de moneyline (Champions League)")
+    parser = argparse.ArgumentParser(description="Tracker en vivo de moneyline (Champions League / La Liga)")
+    parser.add_argument("--competicion", choices=list(COMPETICIONES), default="CL",
+                        help="CL = Champions League, PD = La Liga (default CL)")
     parser.add_argument("--intervalo", type=int, default=30, help="Segundos entre actualizaciones (default 30)")
     parser.add_argument("--edge-min", type=float, default=0.05,
                         help="Ventaja minima modelo - precio para marcar BUENO (default 0.05 = 5 puntos)")
@@ -457,7 +467,7 @@ def main():
     if args.demo:
         tracker = DemoTracker(args.edge_min, sonido, args.demo_local, args.demo_visita)
     else:
-        tracker = Tracker(args.edge_min, sonido, args.previa)
+        tracker = Tracker(args.edge_min, sonido, args.previa, args.competicion)
 
     print(
         f"Tracker de moneyline iniciado (cada {args.intervalo} s, edge minimo {args.edge_min:.0%}). "

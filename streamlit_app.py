@@ -20,7 +20,7 @@ import pandas as pd
 import streamlit as st
 
 from src.live.modelo import StrengthModel, live_probabilities
-from src.live.tracker import DemoTracker, PolymarketMoneyline, evaluate, fetch_live_matches, price_history
+from src.live.tracker import COMPETICIONES, DemoTracker, PolymarketMoneyline, evaluate, fetch_live_matches, price_history
 
 HORA_MX = timezone(timedelta(hours=-6))  # CDMX no tiene horario de verano desde 2022
 COLORES_SENAL = {
@@ -28,6 +28,7 @@ COLORES_SENAL = {
     "ESPERAR": ("#b45309", "rgba(217,119,6,.16)"),
     "NO": ("#b91c1c", "rgba(220,38,38,.14)"),
     "SIN MERCADO": ("#64748b", "rgba(100,116,139,.16)"),
+    "CERRADO": ("#64748b", "rgba(100,116,139,.16)"),
 }
 # Colores de cada resultado en la grafica (como las lineas de Polymarket)
 COLORES_LADO = {"home": "#2d6cdf", "draw": "#8b95a5", "away": "#f2a23a"}
@@ -72,19 +73,19 @@ def modelo():
 
 
 @st.cache_resource
-def polymarket():
-    return PolymarketMoneyline()
+def polymarket(competicion):
+    return PolymarketMoneyline(competicion)
 
 
 @st.cache_data(ttl=20, show_spinner=False)
-def partidos_en_vivo(minutos_previa):
-    return fetch_live_matches(minutos_previa)
+def partidos_en_vivo(minutos_previa, competicion):
+    return fetch_live_matches(minutos_previa, competicion)
 
 
 @st.cache_data(ttl=20, show_spinner=False)
-def precios_polymarket(match_id, home, away, utc_date):
+def precios_polymarket(match_id, home, away, utc_date, competicion):
     partido = {"match_id": match_id, "home": home, "away": away, "utc_date": utc_date}
-    return polymarket().prices(partido)
+    return polymarket(competicion).prices(partido)
 
 
 @st.cache_data(ttl=30, show_spinner=False)
@@ -106,8 +107,11 @@ def fmt_pct(v):
 
 with st.sidebar:
     st.header("Ajustes")
+    competicion = st.selectbox(
+        "Competicion", list(COMPETICIONES), format_func=lambda c: COMPETICIONES[c][0]
+    )
     edge_min = st.slider("Ventaja minima para BUENO (puntos)", 2, 15, 5) / 100
-    intervalo = st.select_slider("Actualizar cada", [15, 30, 60, 120], value=30, format_func=lambda s: f"{s} s")
+    intervalo = st.select_slider("Actualizar cada", [5, 15, 30, 60, 120], value=30, format_func=lambda s: f"{s} s")
     horas_previa = st.slider("Incluir partidos que empiezan en las proximas (horas)", 0, 48, 2)
     rango = st.segmented_control("Rango de la grafica", list(RANGOS), default="Partido") or "Partido"
     demo = st.toggle("Modo demo (partido simulado)", help="Simula un partido para ver como se comporta el tablero.")
@@ -117,8 +121,8 @@ with st.sidebar:
         "moneyline del partido en Polymarket. BUENO = modelo − mercado ≥ ventaja minima."
     )
 
-st.title("Moneyline UCL en vivo")
-st.caption("Champions League · modelo vs. Polymarket · se actualiza solo")
+st.title(f"Moneyline {COMPETICIONES[competicion][0]} en vivo")
+st.caption(f"{COMPETICIONES[competicion][0]} · modelo vs. Polymarket · se actualiza solo")
 
 estado = st.session_state
 estado.setdefault("historial", {})
@@ -318,9 +322,9 @@ def panel():
     else:
         try:
             lista = []
-            for p in partidos_en_vivo(horas_previa * 60):
+            for p in partidos_en_vivo(horas_previa * 60, competicion):
                 try:
-                    precios = precios_polymarket(p["match_id"], p["home"], p["away"], p["utc_date"])
+                    precios = precios_polymarket(p["match_id"], p["home"], p["away"], p["utc_date"], competicion)
                 except Exception:
                     precios = {}
                 lista.append((p, precios))
@@ -330,7 +334,7 @@ def panel():
 
     if not lista:
         st.info(
-            "No hay partidos de Champions en juego en este momento. El tablero revisa de nuevo "
+            f"No hay partidos de {COMPETICIONES[competicion][0]} en juego en este momento. El tablero revisa de nuevo "
             f"cada {intervalo} s; activa el modo demo en la barra lateral para ver un partido simulado."
         )
 
