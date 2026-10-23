@@ -35,6 +35,9 @@ FACTOR_LOCALIA = 1.12  # se multiplica al local y se divide a la visita
 PESO_PRIOR = 6  # partidos "virtuales" que pesa la tabla historica
 PESO_TEMPORADA_ANTERIOR = 0.5
 MAX_GOLES_RESTANTES = 10
+# Cuanto puede variar el ritmo de goles de cada equipo respecto al esperado
+# (segundos tiempos con mas goles, el que pierde arriesga): +-20%.
+VARIACION_RITMO = 0.20
 
 PALABRAS_RUIDO = {
     "fc", "cf", "afc", "sc", "ac", "as", "ssc", "sl", "sk", "fk", "club",
@@ -178,6 +181,25 @@ def live_probabilities(lam_home, lam_away, minute, home_goals, away_goals):
                 p_away += pi * pj
     total = p_home + p_draw + p_away
     return p_home / total, p_draw / total, p_away / total
+
+
+def live_probability_range(lam_home, lam_away, minute, home_goals, away_goals, variacion=VARIACION_RITMO):
+    """(minimos, maximos) de P(local), P(empate), P(visita) moviendo el ritmo de goles.
+
+    El ritmo de goles no es constante durante un partido (los segundos
+    tiempos tienen mas goles, el que va perdiendo arriesga), asi que se
+    recalcula con el ritmo de cada equipo entre (1 - variacion) y
+    (1 + variacion), en todas las combinaciones. El ancho del rango es
+    la incertidumbre del modelo en ese momento.
+    """
+    factores = (1 - variacion, 1.0, 1 + variacion)
+    escenarios = [
+        live_probabilities(lam_home * fh, lam_away * fa, minute, home_goals, away_goals)
+        for fh in factores for fa in factores
+    ]
+    minimos = tuple(min(e[i] for e in escenarios) for i in range(3))
+    maximos = tuple(max(e[i] for e in escenarios) for i in range(3))
+    return minimos, maximos
 
 
 def fit_lambdas(p_home: float, p_draw: float, p_away: float):

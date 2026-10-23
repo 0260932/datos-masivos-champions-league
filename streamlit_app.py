@@ -20,7 +20,7 @@ import altair as alt
 import pandas as pd
 import streamlit as st
 
-from src.live.modelo import StrengthModel, live_probabilities
+from src.live.modelo import StrengthModel
 from src.live.tracker import (
     COMPETICIONES,
     DemoTracker,
@@ -115,12 +115,20 @@ header[data-testid="stHeader"]{background:transparent}
 .sig.s-NO{color:var(--bad);background:rgba(255,93,93,.12)}
 .sig.s-CERRADO,.sig.s-SIN{color:var(--muted);background:rgba(135,150,184,.14)}
 .edge{font-family:var(--display);font-weight:700;font-size:2rem;margin:6px 0 2px;font-variant-numeric:tabular-nums;color:var(--text)}
-.edge small{font-size:.95rem;color:var(--muted);margin-left:4px;font-weight:600}
+.edge small{font-family:var(--body);font-size:.78rem;color:var(--muted);margin-left:6px;font-weight:600}
 .edge.pos{color:var(--good)}.edge.neg{color:var(--bad)}
 .bar{position:relative;height:8px;border-radius:99px;background:var(--line);margin:6px 0 10px}
 .bar .m{position:absolute;left:0;top:0;bottom:0;border-radius:99px}
 .bar .md{position:absolute;top:-4px;width:3px;height:16px;border-radius:2px;background:var(--text);transform:translateX(-1px)}
-.row{display:flex;justify-content:space-between;font-size:.86rem;padding:2px 0;font-variant-numeric:tabular-nums}
+.row{display:flex;justify-content:space-between;gap:8px;font-size:.86rem;padding:2px 0;font-variant-numeric:tabular-nums}
+.row em{font-style:normal;color:var(--muted);font-weight:500;margin-left:4px}
+.bar .rg{position:absolute;top:-3px;height:14px;border-radius:4px;background:rgba(234,240,255,.16);
+ border:1px solid rgba(234,240,255,.35)}
+.why{margin-top:10px;padding-top:10px;border-top:1px solid var(--line);font-size:.82rem;line-height:1.45;color:var(--muted)}
+.why b{display:block;color:var(--text);font-size:.72rem;text-transform:uppercase;letter-spacing:.08em;margin-bottom:3px}
+.metodo{color:var(--muted);font-size:.92rem;line-height:1.55;max-width:75ch}
+.metodo b{color:var(--text)}
+.metodo ol{padding-left:1.2rem;margin:.4rem 0}
 .row span{color:var(--muted)}.row b{color:var(--text);font-weight:600}
 .pm-head{display:flex;flex-wrap:wrap;gap:6px 18px;align-items:baseline;margin:20px 0 0}
 .pm-lider{font-family:var(--display);font-size:2.1rem;font-weight:800;color:var(--text);line-height:1;font-variant-numeric:tabular-nums}
@@ -231,15 +239,13 @@ def mini_escudo(partido, lado):
 with st.sidebar:
     st.markdown("### Ajustes")
     competicion = st.selectbox("Competición", list(COMPETICIONES), format_func=lambda c: COMPETICIONES[c][0])
-    edge_min = st.slider("Ventaja mínima para BUENO (puntos)", 2, 15, 5) / 100
     intervalo = st.select_slider("Actualizar cada", [5, 15, 30, 60, 120], value=30, format_func=lambda s: f"{s} s")
     horas_previa = st.slider("Incluir partidos que empiezan en las próximas (horas)", 0, 48, 2)
     rango = st.segmented_control("Rango de la gráfica", list(RANGOS), default="Partido") or "Partido"
     demo = st.toggle("Modo demo (partido simulado)", help="Simula un partido para ver cómo se comporta el tablero.")
     st.caption(
-        "Antes del partido el modelo copia el precio de Polymarket. Durante el partido lo mueve "
-        "con el marcador y el tiempo restante (Poisson). BUENO = modelo − precio de compra ≥ ventaja mínima: "
-        "el mercado todavía no reacciona a lo que pasó en la cancha."
+        "La ventaja mínima no se configura: la calcula el modelo en cada momento según su propia "
+        "incertidumbre. Abre «Cómo decide la plataforma» para ver el método."
     )
 
 estado = st.session_state
@@ -247,7 +253,7 @@ estado.setdefault("historial", {})
 estado.setdefault("ultima_senal", {})
 estado.setdefault("avisos", [])
 if demo and "demo" not in estado:
-    estado["demo"] = DemoTracker(edge_min, False, DEMO["home"], DEMO["away"])
+    estado["demo"] = DemoTracker(False, DEMO["home"], DEMO["away"])
     estado["demo"].partido.update(DEMO)
 if not demo:
     estado.pop("demo", None)
@@ -313,20 +319,28 @@ def tarjeta(partido, filas, lambdas, fuente, precios):
         if f["edge"] is None:
             edge = "<div class='edge'>–</div>"
         else:
-            signo = "pos" if f["edge"] >= edge_min else ("neg" if f["edge"] <= -edge_min else "")
-            edge = f"<div class='edge {signo}'>{f['edge'] * 100:+.1f}<small>pts</small></div>"
+            signo = {"BUENO": "pos", "NO": "neg"}.get(f["senal"], "")
+            edge = (
+                f"<div class='edge {signo}'>{f['edge'] * 100:+.1f}<small>pts · exige "
+                f"{f['umbral'] * 100:.1f}</small></div>"
+            )
         ancho = 0 if f["ask"] is None else f["ask"] * 100
+        ev = "–" if f["ev"] is None else f"{f['ev'] * 100:+.0f}¢"
         tiles.append(
             f"<div class='out s-{clase_sig}'>"
             f"<div class='out-h'>{mini_escudo(partido, lado)}<span class='nm'>{esc(nombre)}</span>"
             f"<span class='sig s-{clase_sig}'>{esc(f['senal'])}</span></div>"
             f"{edge}"
             f"<div class='bar'><div class='m' style='width:{ancho:.1f}%;background:{COLORES_LADO[lado]}'></div>"
+            f"<div class='rg' style='left:{f['p_bajo'] * 100:.1f}%;width:{(f['p_alto'] - f['p_bajo']) * 100:.1f}%'></div>"
             f"<div class='md' style='left:{f['p_modelo'] * 100:.1f}%'></div></div>"
             f"<div class='row'><span>Precio de compra</span><b>{fmt_pct(f['ask'])}</b></div>"
-            f"<div class='row'><span>Modelo</span><b>{fmt_pct(f['p_modelo'])}</b></div>"
+            f"<div class='row'><span>Modelo (rango)</span><b>{f['p_modelo']:.1%} "
+            f"<em>{f['p_bajo']:.0%}–{f['p_alto']:.0%}</em></b></div>"
+            f"<div class='row'><span>Ganancia esperada / $1</span><b>{ev}</b></div>"
             f"<div class='row'><span>Momio merc. / justo</span><b>{fmt_ml(f['ml_mercado'])} / {fmt_ml(f['ml_justo'])}</b></div>"
-            f"<div class='row'><span>¼ Kelly</span><b>{f['kelly_25']:.1%}</b></div>"
+            f"<div class='row'><span>Apuesta (% banca)</span><b>{f['kelly_25']:.1%}</b></div>"
+            f"<div class='why'><b>Por qué</b>{esc(f['porque'])}</div>"
             "</div>"
         )
 
@@ -479,7 +493,7 @@ def registrar(partido, filas):
             estado["avisos"].insert(0, {
                 "hora": f"{ahora:%H:%M}", "minuto": partido["minute"], "lado": f["lado"],
                 "partido": dict(partido), "equipo": f["equipo"], "p_modelo": f["p_modelo"],
-                "ask": f["ask"], "edge": f["edge"], "ml": f["ml_mercado"],
+                "ask": f["ask"], "edge": f["edge"], "ml": f["ml_mercado"], "porque": f["porque"],
             })
             st.toast(f"Buen momento: moneyline de {f['equipo']}", icon="✅")
         estado["ultima_senal"][clave] = f["senal"]
@@ -500,12 +514,41 @@ def avisos():
         items.append(
             "<div class='ev'>"
             f"<span class='t'>{a['minuto']}'</span>{mini_escudo(p, a['lado'])}"
-            f"<div class='tx'><b>{esc(a['equipo'])}</b> · modelo {a['p_modelo']:.1%} vs precio {a['ask']:.1%} "
-            f"(<b>{a['edge'] * 100:+.1f} pts</b>, momio {fmt_ml(a['ml'])})"
+            f"<div class='tx'><b>{esc(a['equipo'])}</b> · {esc(a['porque'])} "
+            f"Momio {fmt_ml(a['ml'])}."
             f"<br><span>{a['hora']} · {esc(nombre_corto(p, 'home'))} vs {esc(nombre_corto(p, 'away'))}</span></div>"
             "</div>"
         )
     st.markdown(f"<div class='feed'>{''.join(items)}</div>", unsafe_allow_html=True)
+
+
+def metodo():
+    with st.expander("Cómo decide la plataforma"):
+        st.markdown(
+            "<div class='metodo'><ol>"
+            "<li><b>Punto de partida.</b> Antes del silbatazo se toma el precio de Polymarket de local, "
+            "empate y visita, y se buscan los goles esperados de cada equipo que reproducen esos "
+            "precios. El mercado sabe más que cualquier estadística sobre quién es favorito, así que "
+            "el modelo arranca igual que él. Si un partido no tiene mercado, se usan las estadísticas "
+            "procesadas del proyecto (goles a favor y en contra por equipo).</li>"
+            "<li><b>En vivo.</b> Los goles que faltan se modelan como Poisson sobre el tiempo restante y se "
+            "suman al marcador. Así se obtiene la probabilidad de cada resultado minuto a minuto.</li>"
+            "<li><b>Incertidumbre.</b> El ritmo de goles cambia durante un partido (los segundos tiempos tienen "
+            "más goles y el que pierde arriesga), así que el cálculo se repite con el ritmo de cada equipo "
+            "entre 20% más lento y 20% más rápido. Eso da el rango (barra clara) alrededor del modelo "
+            "(marca blanca).</li>"
+            "<li><b>Ventaja exigida.</b> Es la distancia entre el modelo y su escenario más bajo, más 2 pts "
+            "por si el precio se mueve antes de comprar. La pone el modelo: es más grande al inicio "
+            "(falta mucho partido) y se achica al final.</li>"
+            "<li><b>Señal.</b> BUENO si modelo − precio de compra ≥ ventaja exigida, es decir, aun en el "
+            "escenario bajo el precio está barato. ESPERAR si el modelo está arriba del precio pero no "
+            "por suficiente. NO si el precio es más caro de lo que el modelo cree.</li>"
+            "<li><b>Cuánto.</b> Ganancia esperada por $1 = probabilidad del modelo ÷ precio − 1. La apuesta "
+            "sugerida es ¼ de Kelly con el escenario bajo, con tope de 5% de la banca, porque el modelo "
+            "no ve tarjetas rojas, lesiones ni penales.</li>"
+            "</ol>Fuentes: marcador y escudos de football-data.org; precios e historial de Polymarket.</div>",
+            unsafe_allow_html=True,
+        )
 
 
 def sin_partidos():
@@ -560,8 +603,7 @@ def panel():
     calculados = []
     for partido, precios in lista:
         lambdas, fuente = match_lambdas(modelo(), partido, precios)
-        probs = live_probabilities(*lambdas, partido["minute"], partido["home_goals"], partido["away_goals"])
-        filas = evaluate(partido, probs, precios, edge_min)
+        filas = evaluate(partido, lambdas, precios)
         registrar(partido, filas)
         calculados.append((partido, precios, filas, lambdas, fuente))
     estado["_filas"] = [(p, pr, f) for p, pr, f, _, _ in calculados]
@@ -572,6 +614,7 @@ def panel():
     for partido, precios, filas, lambdas, fuente in calculados:
         tarjeta(partido, filas, lambdas, fuente, precios)
     avisos()
+    metodo()
     st.markdown(
         "<div class='foot'>Datos: football-data.org (marcador) y Polymarket (precios). "
         "Las señales son una referencia del modelo, no una garantía.</div>",

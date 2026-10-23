@@ -65,11 +65,11 @@ Si usas un entorno virtual, registra el kernel antes de abrir el notebook:
 1. Marcador y minuto desde football-data.org (usa el mismo `FOOTBALL_DATA_API_TOKEN`).
 2. Probabilidad 1X2 con `src/live/modelo.py`: Poisson sobre el tiempo restante. Los goles esperados se anclan al precio de Polymarket de justo antes del partido (antes del inicio, al precio actual), así que el modelo arranca igual que el mercado y solo se separa por los goles y el tiempo. Si no hay mercado, usa las estadísticas de `data/processed/` (tabla histórica como prior y ajuste por localía).
 3. Precio de compra (best ask) del mercado moneyline del partido en Polymarket (API pública).
-4. Señal `BUENO` si modelo − precio ≥ `--edge-min` (default 5 puntos); `ESPERAR` si la ventaja es positiva pero menor; `NO` si el mercado cobra más de lo que da el modelo. Avisa (con beep) solo cuando un resultado pasa a `BUENO`.
+4. Señal: la ventaja mínima la calcula el modelo, no el usuario. Se repite el cálculo con el ritmo de goles de cada equipo ±20% (los segundos tiempos tienen más goles, el que pierde arriesga) y se exige que incluso el escenario bajo quede arriba del precio de compra, más 2 pts por deslizamiento. `BUENO` si se cumple; `ESPERAR` si el modelo está arriba del precio pero no por suficiente; `NO` si el mercado cobra más de lo que da el modelo. Cada señal trae su explicación ("Por qué"), la ganancia esperada por $1 y una apuesta sugerida (¼ de Kelly con el escenario bajo, tope 5% de la banca). Avisa (con beep) solo cuando un resultado pasa a `BUENO`.
 
 ```
 python -m src.live.tracker                 # loop cada 30 s, Ctrl+C para detener
-python -m src.live.tracker --intervalo 60 --edge-min 0.08
+python -m src.live.tracker --intervalo 60 --competicion PD
 python -m src.live.tracker --una-vez       # una sola pasada
 python -m src.live.tracker --demo          # partido simulado, sin APIs
 ```

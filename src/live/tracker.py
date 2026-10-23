@@ -8,8 +8,9 @@ Cada N segundos (30 por default):
    visita dado el marcador y el tiempo restante.
 3. Busca el mercado moneyline del partido en Polymarket (API publica,
    sin credenciales) y compara contra el precio de compra (best ask).
-4. Avisa si es buen momento para entrar: el modelo da mas probabilidad
-   que la que el mercado esta cobrando por al menos --edge-min puntos.
+4. Avisa si es buen momento para entrar: incluso el escenario bajo del
+   modelo (ritmo de goles -20%) queda arriba del precio que cobra el
+   mercado. La ventaja minima la fija el modelo, no el usuario.
 
 Cada evaluacion se guarda en data/interim/live/senales_<fecha>.csv para
 poder revisar despues que tan buenas fueron las senales.
@@ -41,6 +42,7 @@ from src.live.modelo import (
     fit_lambdas,
     kelly_fraction,
     live_probabilities,
+    live_probability_range,
     name_similarity,
     to_american,
 )
@@ -321,36 +323,99 @@ def match_lambdas(modelo, partido, precios):
 # Evaluacion y avisos
 # ---------------------------------------------------------------------------
 
-def evaluate(partido, probs, precios, edge_min):
-    """Una fila por resultado (local / empate / visita) con la senal."""
+# Ventaja que se exige ademas de la incertidumbre del modelo: el precio puede
+# moverse un poco entre que sale la senal y que se compra (deslizamiento).
+COLCHON_EJECUCION = 0.02
+# Tope de la apuesta sugerida (fraccion de la banca): el modelo no ve rojas,
+# lesiones ni penales, asi que nunca se sugiere mas que esto en un solo resultado.
+TOPE_APUESTA = 0.05
+
+
+def evaluate(partido, lambdas, precios):
+    """Una fila por resultado (local / empate / visita) con la senal y su justificacion.
+
+    La ventaja minima la pone el modelo: es lo que separa su probabilidad
+    central de su escenario mas bajo (ritmo de goles +-20%), mas un
+    colchon de ejecucion. BUENO = incluso el escenario bajo del modelo
+    queda arriba del precio de compra por al menos el colchon.
+    """
+    minuto, gl, gv = partido["minute"], partido["home_goals"], partido["away_goals"]
+    probs = live_probabilities(*lambdas, minuto, gl, gv)
+    bajos, altos = live_probability_range(*lambdas, minuto, gl, gv)
+    previas = live_probabilities(*lambdas, 0, 0, 0)
     nombres = {"home": partido["home"], "draw": "Empate", "away": partido["away"]}
     filas = []
-    for lado, p in zip(("home", "draw", "away"), probs):
-        ask = precios.get(lado, {}).get("ask")
+    for i, lado in enumerate(("home", "draw", "away")):
+        p, p_bajo, ask = probs[i], bajos[i], precios.get(lado, {}).get("ask")
+        umbral = (p - p_bajo) + COLCHON_EJECUCION
         if partido.get("status") == "FINISHED":
             senal, edge = "CERRADO", None  # ya no se puede entrar
         elif ask is None or not 0.01 <= ask <= 0.99:
             senal, edge = "SIN MERCADO", None
         else:
             edge = p - ask
-            if edge >= edge_min:
+            if edge >= umbral:
                 senal = "BUENO"
             elif edge > 0:
                 senal = "ESPERAR"
             else:
                 senal = "NO"
+        con_precio = edge is not None
         filas.append({
             "lado": lado,
             "equipo": nombres[lado],
             "p_modelo": p,
+            "p_bajo": p_bajo,
+            "p_alto": altos[i],
+            "p_previa": previas[i],
             "ask": ask,
             "edge": edge,
+            "umbral": umbral,
             "senal": senal,
+            # ganancia esperada por cada $1 apostado comprando al precio de compra
+            "ev": p / ask - 1 if con_precio else None,
+            "ev_bajo": p_bajo / ask - 1 if con_precio else None,
             "ml_justo": to_american(p),
             "ml_mercado": to_american(ask),
-            "kelly_25": 0.25 * kelly_fraction(p, ask) if edge is not None else 0.0,
+            # Kelly con el escenario bajo: si el modelo esta de mas optimista, no se sobreapuesta
+            "kelly_25": min(TOPE_APUESTA, 0.25 * kelly_fraction(p_bajo, ask)) if senal == "BUENO" else 0.0,
         })
+    for f in filas:
+        f["porque"] = explain(partido, f)
     return filas
+
+
+def explain(partido, f):
+    """Texto corto con el sustento de la senal, en terminos del partido."""
+    equipo = "el empate" if f["lado"] == "draw" else f["equipo"]
+    if f["senal"] == "CERRADO":
+        return "El partido terminó; ya no se puede entrar."
+    if partido["status"] in ESTADOS_PROGRAMADOS:
+        return (
+            "Antes del partido el modelo toma el precio de Polymarket como punto de partida, así que no "
+            "hay ventaja. Las señales aparecen en vivo, cuando un gol o el reloj cambian la probabilidad "
+            "y el mercado tarda en ajustarse."
+        )
+    contexto = (
+        f"Antes del partido {equipo} tenía {f['p_previa']:.0%}. Con {partido['home_goals']}-"
+        f"{partido['away_goals']} al {partido['minute']}' y ~{max(0, 95 - partido['minute'])} min por jugar, "
+        f"el modelo calcula {f['p_modelo']:.0%} (entre {f['p_bajo']:.0%} y {f['p_alto']:.0%} según el ritmo de goles)."
+    )
+    if f["senal"] == "SIN MERCADO":
+        return contexto + " No hay precio en Polymarket para comparar."
+    precio = f" Polymarket lo vende en {f['ask']:.0%}."
+    if f["senal"] == "BUENO":
+        return contexto + precio + (
+            f" Aun en el escenario bajo ({f['p_bajo']:.0%}) el precio queda abajo: ventaja de "
+            f"{f['edge'] * 100:+.1f} pts contra {f['umbral'] * 100:.1f} pts exigidos. Ganancia esperada "
+            f"{f['ev'] * 100:+.0f}¢ por cada $1 ({f['ev_bajo'] * 100:+.0f}¢ en el escenario bajo)."
+        )
+    if f["senal"] == "ESPERAR":
+        return contexto + precio + (
+            f" El modelo está arriba del precio por {f['edge'] * 100:.1f} pts, pero se exigen "
+            f"{f['umbral'] * 100:.1f} pts: en el escenario bajo ({f['p_bajo']:.0%}) no conviene."
+        )
+    return contexto + precio + f" Pagarías {-f['edge'] * 100:.1f} pts más de lo que el modelo cree que vale."
 
 
 def _fmt_ml(v):
@@ -363,13 +428,18 @@ def print_match(partido, filas, lambdas, fuente="estadisticas"):
         f"   min {partido['minute']}'  [{partido['status']}]"
         f"   goles esperados: {lambdas[0]:.2f}-{lambdas[1]:.2f} ({fuente})"
     )
-    print(f"  {'Resultado':<28}{'Modelo':>8}{'Ask':>8}{'Edge':>8}{'ML justo':>10}{'ML merc':>10}{'1/4 Kelly':>11}  Senal")
+    print(
+        f"  {'Resultado':<26}{'Modelo':>8}{'Rango':>13}{'Ask':>7}{'Edge':>8}{'Exige':>7}"
+        f"{'EV/$1':>8}{'ML merc':>9}{'1/4 Kelly':>11}  Senal"
+    )
     for f in filas:
         ask = "   -" if f["ask"] is None else f"{f['ask']:.3f}"
         edge = "   -" if f["edge"] is None else f"{f['edge']:+.3f}"
+        ev = "   -" if f["ev"] is None else f"{f['ev']:+.2f}"
+        rango = f"{f['p_bajo']:.2f}-{f['p_alto']:.2f}"
         print(
-            f"  {f['equipo'][:27]:<28}{f['p_modelo']:>8.3f}{ask:>8}{edge:>8}"
-            f"{_fmt_ml(f['ml_justo']):>10}{_fmt_ml(f['ml_mercado']):>10}"
+            f"  {f['equipo'][:25]:<26}{f['p_modelo']:>8.3f}{rango:>13}"
+            f"{ask:>7}{edge:>8}{f['umbral']:>7.3f}{ev:>8}{_fmt_ml(f['ml_mercado']):>9}"
             f"{f['kelly_25']:>10.1%}  {f['senal']}"
         )
 
@@ -377,9 +447,7 @@ def print_match(partido, filas, lambdas, fuente="estadisticas"):
 def alert(partido, fila, sonido):
     msg = (
         f">>> AVISO: buen momento para moneyline de {fila['equipo']} "
-        f"({partido['home']} vs {partido['away']}, min {partido['minute']}'): "
-        f"modelo {fila['p_modelo']:.1%} vs mercado {fila['ask']:.1%} "
-        f"(edge {fila['edge']:+.1%}, ML {_fmt_ml(fila['ml_mercado'])})"
+        f"({partido['home']} vs {partido['away']}, ML {_fmt_ml(fila['ml_mercado'])}). {fila['porque']}"
     )
     print(msg)
     logger.info(msg)
@@ -400,14 +468,16 @@ def save_rows(partido, filas):
         if nuevo:
             writer.writerow([
                 "timestamp_utc", "match_id", "home", "away", "minute", "home_goals",
-                "away_goals", "lado", "equipo", "p_modelo", "ask", "edge", "senal",
+                "away_goals", "lado", "equipo", "p_modelo", "p_bajo", "p_alto", "ask", "edge",
+                "umbral", "ev", "senal",
             ])
         for f in filas:
             writer.writerow([
                 ahora.isoformat(), partido["match_id"], partido["home"], partido["away"],
                 partido["minute"], partido["home_goals"], partido["away_goals"],
-                f["lado"], f["equipo"], round(f["p_modelo"], 4), f["ask"],
-                None if f["edge"] is None else round(f["edge"], 4), f["senal"],
+                f["lado"], f["equipo"], round(f["p_modelo"], 4), round(f["p_bajo"], 4),
+                round(f["p_alto"], 4), f["ask"], None if f["edge"] is None else round(f["edge"], 4),
+                round(f["umbral"], 4), None if f["ev"] is None else round(f["ev"], 4), f["senal"],
             ])
 
 
@@ -416,11 +486,10 @@ def save_rows(partido, filas):
 # ---------------------------------------------------------------------------
 
 class Tracker:
-    def __init__(self, edge_min, sonido, minutos_previa, competicion="CL"):
+    def __init__(self, sonido, minutos_previa, competicion="CL"):
         self.modelo = StrengthModel()
         self.competicion = competicion
         self.polymarket = PolymarketMoneyline(competicion)
-        self.edge_min = edge_min
         self.sonido = sonido
         self.minutos_previa = minutos_previa
         self.ultima_senal = {}  # (match_id, lado) -> senal, para avisar solo en cambios
@@ -428,8 +497,7 @@ class Tracker:
     def analyze(self, partido, precios):
         """(lambdas, fuente, filas) del partido; no imprime ni guarda nada."""
         lambdas, fuente = match_lambdas(self.modelo, partido, precios)
-        probs = live_probabilities(*lambdas, partido["minute"], partido["home_goals"], partido["away_goals"])
-        return lambdas, fuente, evaluate(partido, probs, precios, self.edge_min)
+        return lambdas, fuente, evaluate(partido, lambdas, precios)
 
     def process(self, partido, precios):
         lambdas, fuente, filas = self.analyze(partido, precios)
@@ -459,8 +527,8 @@ class Tracker:
 class DemoTracker(Tracker):
     """Partido simulado: avanza 5 minutos por vuelta y el mercado reacciona con retraso."""
 
-    def __init__(self, edge_min, sonido, home, away):
-        super().__init__(edge_min, sonido, minutos_previa=0)
+    def __init__(self, sonido, home, away):
+        super().__init__(sonido, minutos_previa=0)
         self.partido = {
             "match_id": "demo", "home": home, "away": away, "utc_date": datetime.now(timezone.utc),
             "status": "IN_PLAY", "minute": 0, "home_goals": 0, "away_goals": 0,
@@ -505,8 +573,6 @@ def main():
     parser.add_argument("--competicion", choices=list(COMPETICIONES), default="CL",
                         help="CL = Champions League, PD = La Liga, PL = Premier League (default CL)")
     parser.add_argument("--intervalo", type=int, default=30, help="Segundos entre actualizaciones (default 30)")
-    parser.add_argument("--edge-min", type=float, default=0.05,
-                        help="Ventaja minima modelo - precio para marcar BUENO (default 0.05 = 5 puntos)")
     parser.add_argument("--previa", type=int, default=30,
                         help="Incluir partidos que empiezan en los proximos N minutos (default 30)")
     parser.add_argument("--una-vez", action="store_true", help="Hacer una sola pasada y salir")
@@ -530,12 +596,12 @@ def main():
 
     sonido = not args.sin_sonido
     if args.demo:
-        tracker = DemoTracker(args.edge_min, sonido, args.demo_local, args.demo_visita)
+        tracker = DemoTracker(sonido, args.demo_local, args.demo_visita)
     else:
-        tracker = Tracker(args.edge_min, sonido, args.previa, args.competicion)
+        tracker = Tracker(sonido, args.previa, args.competicion)
 
     print(
-        f"Tracker de moneyline iniciado (cada {args.intervalo} s, edge minimo {args.edge_min:.0%}). "
+        f"Tracker de moneyline iniciado (cada {args.intervalo} s; la ventaja minima la fija el modelo). "
         "Ctrl+C para detener."
     )
     logger.info("Tracker iniciado: %s", json.dumps(vars(args)))
