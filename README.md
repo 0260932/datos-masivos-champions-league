@@ -58,6 +58,24 @@ Si usas un entorno virtual, registra el kernel antes de abrir el notebook:
 2. python -m ipykernel install --user --name=datos-masivos-venv --display-name "Python (datos-masivos venv)"
 3. Selecciónalo dentro de Jupyter.
 
+## Tracker en vivo de moneyline
+
+`src/live/tracker.py` sigue los partidos de Champions en juego y cada 30 s indica, para local / empate / visita, si es buen momento para entrar al moneyline:
+
+1. Marcador y minuto desde football-data.org (usa el mismo `FOOTBALL_DATA_API_TOKEN`).
+2. Probabilidad 1X2 con `src/live/modelo.py`: goles esperados por equipo (estadísticas de `data/processed/`, con la tabla histórica como prior y ajuste por localía) y Poisson sobre el tiempo restante.
+3. Precio de compra (best ask) del mercado moneyline del partido en Polymarket (API pública).
+4. Señal `BUENO` si modelo − precio ≥ `--edge-min` (default 5 puntos); `ESPERAR` si la ventaja es positiva pero menor; `NO` si el mercado cobra más de lo que da el modelo. Avisa (con beep) solo cuando un resultado pasa a `BUENO`.
+
+```
+python -m src.live.tracker                 # loop cada 30 s, Ctrl+C para detener
+python -m src.live.tracker --intervalo 60 --edge-min 0.08
+python -m src.live.tracker --una-vez       # una sola pasada
+python -m src.live.tracker --demo          # partido simulado, sin APIs
+```
+
+Requiere haber corrido antes `python -m src.processing.champions_league`. Cada evaluación se guarda en `data/interim/live/senales_<fecha>.csv` y los avisos en `logs/live_tracker.log`. El modelo es simple (no considera tarjetas rojas, alineaciones ni cambios); úsalo como referencia contra el mercado, no como garantía.
+
 ## Resultados principales
 Con los primeros 8 partidos finalizados de la fase de liga 2026, el equipo local promedió 2.25 goles por partido contra 1.62 del visitante (ver notebooks/01_extraccion_y_diagnostico.ipynb, sección "Primera evidencia", y la gráfica en docs/goles_local_vs_visitante.png).
 
@@ -71,6 +89,7 @@ Con los primeros 8 partidos finalizados de la fase de liga 2026, el equipo local
 - notebooks/02_modelo_prediccion_xgboost.ipynb
 - src/ingestion/: scripts de descarga (uno por fuente)
 - src/processing/: pipeline de limpieza y transformación
+- src/live/: tracker en vivo de moneyline (modelo + loop)
 - src/validation/: validaciones de calidad de datos
 - tests/: pruebas automáticas
 - .env.example

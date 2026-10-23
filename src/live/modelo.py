@@ -1,0 +1,185 @@
+"""
+Modelo de probabilidades en vivo (1X2) para el tracker de moneyline.
+
+Idea:
+1. Antes del partido, cada equipo tiene una tasa esperada de goles
+   (lambda) calculada con las estadisticas procesadas en
+   data/processed/champions_league/ (temporadas recientes + tabla
+   historica como "prior"), con ajuste por localia.
+2. Durante el partido, los goles que faltan por anotarse se modelan como
+   Poisson con lambda * (tiempo restante / tiempo total). Sumando el
+   marcador actual se obtienen P(local gana), P(empate), P(visita gana).
+
+Es un modelo simple (Poisson independiente, sin tarjetas rojas ni
+alineaciones); sirve como referencia contra el precio del mercado, no
+como verdad absoluta.
+"""
+
+import difflib
+import math
+import re
+import unicodedata
+from dataclasses import dataclass
+from pathlib import Path
+
+import pandas as pd
+
+ROOT_DIR = Path(__file__).resolve().parents[2]
+PROCESSED_DIR = ROOT_DIR / "data" / "processed" / "champions_league"
+
+MINUTOS_PARTIDO = 95  # 90 + reposicion promedio
+FACTOR_LOCALIA = 1.12  # se multiplica al local y se divide a la visita
+PESO_PRIOR = 6  # partidos "virtuales" que pesa la tabla historica
+PESO_TEMPORADA_ANTERIOR = 0.5
+MAX_GOLES_RESTANTES = 10
+
+PALABRAS_RUIDO = {
+    "fc", "cf", "afc", "sc", "ac", "as", "ssc", "sl", "sk", "fk", "club",
+    "de", "the", "calcio", "futbol", "football", "1907", "1899", "1909",
+}
+
+
+def normalize_name(name: str) -> str:
+    """Nombre en minusculas, sin acentos ni palabras de relleno (FC, CF...)."""
+    if not isinstance(name, str):
+        return ""
+    texto = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode()
+    tokens = re.findall(r"[a-z0-9]+", texto.lower())
+    tokens = [t for t in tokens if t not in PALABRAS_RUIDO]
+    return " ".join(tokens)
+
+
+def name_similarity(a: str, b: str) -> float:
+    na, nb = normalize_name(a), normalize_name(b)
+    if not na or not nb:
+        return 0.0
+    if na == nb:
+        return 1.0
+    # "bayern" ~ "bayern munchen", pero "milan" NO ~ "inter milan"
+    corto, largo = sorted((na, nb), key=len)
+    if largo.startswith(corto + " "):
+        return 0.95
+    return difflib.SequenceMatcher(None, na, nb).ratio()
+
+
+def find_team(name: str, candidates, umbral=0.8):
+    """Devuelve el candidato mas parecido a `name`, o None si ninguno pasa el umbral."""
+    mejor, mejor_score = None, 0.0
+    for c in candidates:
+        s = name_similarity(name, c)
+        if s > mejor_score:
+            mejor, mejor_score = c, s
+    return mejor if mejor_score >= umbral else None
+
+
+@dataclass
+class TeamRating:
+    team: str
+    goals_for: float  # goles a favor esperados por partido
+    goals_against: float  # goles en contra esperados por partido
+    fuente: str
+
+
+class StrengthModel:
+    """Fuerza ofensiva/defensiva por equipo a partir de los datos procesados."""
+
+    def __init__(self, processed_dir: Path = PROCESSED_DIR):
+        temporadas = sorted(
+            p for p in processed_dir.glob("season=*")
+            if p.name.split("=", 1)[1].isdigit()
+        )
+        if not temporadas:
+            raise RuntimeError(
+                f"No hay temporadas procesadas en {processed_dir}. "
+                "Corre primero: python -m src.processing.champions_league"
+            )
+
+        actual = pd.read_csv(temporadas[-1] / "team_stats.csv")
+        actual["peso"] = 1.0
+        partes = [actual]
+        if len(temporadas) > 1:
+            anterior = pd.read_csv(temporadas[-2] / "team_stats.csv")
+            anterior["peso"] = PESO_TEMPORADA_ANTERIOR
+            partes.append(anterior)
+        self.recent = pd.concat(partes, ignore_index=True)
+
+        hist_path = processed_dir / "historical_performance.csv"
+        self.historical = pd.read_csv(hist_path) if hist_path.exists() else pd.DataFrame()
+
+        mp = self.recent["matches_played"] * self.recent["peso"]
+        self.league_avg = float((self.recent["goals_for_avg"] * mp).sum() / mp.sum())
+
+    def rating(self, team: str) -> TeamRating:
+        prior_gf = prior_ga = self.league_avg
+        fuente = "promedio liga"
+
+        if not self.historical.empty:
+            h = find_team(team, self.historical["team"])
+            if h is not None:
+                fila = self.historical[self.historical["team"] == h].iloc[0]
+                if fila["matches_played"] > 0:
+                    prior_gf = fila["goals_for"] / fila["matches_played"]
+                    prior_ga = fila["goals_against"] / fila["matches_played"]
+                    fuente = "historico"
+
+        r = find_team(team, self.recent["team"].unique())
+        if r is None:
+            return TeamRating(team, prior_gf, prior_ga, fuente)
+
+        filas = self.recent[self.recent["team"] == r]
+        n = filas["matches_played"] * filas["peso"]
+        n_total = float(n.sum())
+        gf = (float((filas["goals_for_avg"] * n).sum()) + PESO_PRIOR * prior_gf) / (n_total + PESO_PRIOR)
+        ga = (float((filas["goals_against_avg"] * n).sum()) + PESO_PRIOR * prior_ga) / (n_total + PESO_PRIOR)
+        return TeamRating(team, gf, ga, f"{fuente} + reciente ({n_total:.1f} pj)")
+
+    def expected_goals(self, home: str, away: str):
+        """Lambdas de goles para el partido completo (local, visita)."""
+        h, a = self.rating(home), self.rating(away)
+        avg = self.league_avg
+        lam_home = avg * (h.goals_for / avg) * (a.goals_against / avg) * FACTOR_LOCALIA
+        lam_away = avg * (a.goals_for / avg) * (h.goals_against / avg) / FACTOR_LOCALIA
+        return lam_home, lam_away
+
+
+def _poisson_pmf(k: int, lam: float) -> float:
+    if lam <= 0:
+        return 1.0 if k == 0 else 0.0
+    return math.exp(-lam) * lam ** k / math.factorial(k)
+
+
+def live_probabilities(lam_home, lam_away, minute, home_goals, away_goals):
+    """P(local), P(empate), P(visita) dado el marcador y el minuto actual."""
+    restante = max(0.0, MINUTOS_PARTIDO - float(minute)) / MINUTOS_PARTIDO
+    lh, la = lam_home * restante, lam_away * restante
+    ph = [_poisson_pmf(k, lh) for k in range(MAX_GOLES_RESTANTES + 1)]
+    pa = [_poisson_pmf(k, la) for k in range(MAX_GOLES_RESTANTES + 1)]
+
+    p_home = p_draw = p_away = 0.0
+    for i, pi in enumerate(ph):
+        for j, pj in enumerate(pa):
+            diff = (home_goals + i) - (away_goals + j)
+            if diff > 0:
+                p_home += pi * pj
+            elif diff == 0:
+                p_draw += pi * pj
+            else:
+                p_away += pi * pj
+    total = p_home + p_draw + p_away
+    return p_home / total, p_draw / total, p_away / total
+
+
+def to_american(p: float):
+    """Probabilidad -> momio americano (moneyline). None si p no es valida."""
+    if p is None or p <= 0 or p >= 1:
+        return None
+    if p >= 0.5:
+        return -round(100 * p / (1 - p))
+    return round(100 * (1 - p) / p)
+
+
+def kelly_fraction(p_model: float, price: float) -> float:
+    """Fraccion de Kelly para comprar a `price` (contrato que paga 1)."""
+    if price is None or price <= 0 or price >= 1:
+        return 0.0
+    return max(0.0, (p_model - price) / (1 - price))
