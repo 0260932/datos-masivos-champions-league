@@ -38,6 +38,7 @@ import requests
 from src.ingestion.extract_api_football_data import API_BASE_URL, get_api_token
 from src.live.modelo import (
     StrengthModel,
+    fit_lambdas,
     kelly_fraction,
     live_probabilities,
     name_similarity,
@@ -121,6 +122,10 @@ def fetch_live_matches(minutos_previa: int, competicion: str = "CL"):
             "match_id": m.get("id"),
             "home": m.get("homeTeam", {}).get("name"),
             "away": m.get("awayTeam", {}).get("name"),
+            "home_short": m.get("homeTeam", {}).get("shortName"),
+            "away_short": m.get("awayTeam", {}).get("shortName"),
+            "home_crest": m.get("homeTeam", {}).get("crest"),
+            "away_crest": m.get("awayTeam", {}).get("crest"),
             "utc_date": utc_date,
             "status": status,
             "minute": minuto,
@@ -253,6 +258,65 @@ def price_history(token_id, start_ts=None, fidelity=1):
 
 
 # ---------------------------------------------------------------------------
+# Anclaje del modelo al mercado
+# ---------------------------------------------------------------------------
+
+_ANCLAS = {}  # match_id -> lambdas fijadas con el precio de justo antes del inicio
+
+
+def _precio_medio(info):
+    bid, ask, last = info.get("bid"), info.get("ask"), info.get("last")
+    if bid and ask:
+        return (bid + ask) / 2
+    return last or ask
+
+
+def market_lambdas(partido, precios):
+    """Lambdas ancladas al 1X2 de Polymarket antes del partido, o None si no se puede.
+
+    Antes del inicio se usa el precio actual (se recalcula cada vuelta).
+    Ya iniciado se usa el ultimo precio antes del silbatazo, sacado del
+    historial, y se fija para el resto del partido.
+    """
+    if partido["match_id"] in _ANCLAS:
+        return _ANCLAS[partido["match_id"]]
+    lados = ("home", "draw", "away")
+    if any(lado not in precios for lado in lados):
+        return None
+
+    if partido["status"] in ESTADOS_PROGRAMADOS:
+        probs = [_precio_medio(precios[lado]) for lado in lados]
+        return None if None in probs else fit_lambdas(*probs)
+
+    probs = []
+    for lado in lados:
+        token = precios[lado].get("token_id")
+        if not token:
+            return None
+        inicio = partido["utc_date"]
+        historial = price_history(token, (inicio - timedelta(hours=3)).timestamp(), fidelity=1)
+        antes = [p for t, p in historial if t <= inicio]
+        if not antes:
+            return None
+        probs.append(antes[-1])
+    _ANCLAS[partido["match_id"]] = fit_lambdas(*probs)
+    logger.info("Modelo anclado al mercado para %s vs %s: %s", partido["home"], partido["away"], probs)
+    return _ANCLAS[partido["match_id"]]
+
+
+def match_lambdas(modelo, partido, precios):
+    """(lambdas, fuente): ancladas al mercado si hay precios; si no, con las estadisticas."""
+    try:
+        anclado = market_lambdas(partido, precios)
+    except requests.RequestException:
+        logger.exception("No se pudo anclar al mercado %s vs %s", partido["home"], partido["away"])
+        anclado = None
+    if anclado is not None:
+        return anclado, "mercado"
+    return modelo.expected_goals(partido["home"], partido["away"]), "estadisticas"
+
+
+# ---------------------------------------------------------------------------
 # Evaluacion y avisos
 # ---------------------------------------------------------------------------
 
@@ -292,11 +356,11 @@ def _fmt_ml(v):
     return "  -  " if v is None else f"{v:+d}"
 
 
-def print_match(partido, filas, lambdas):
+def print_match(partido, filas, lambdas, fuente="estadisticas"):
     print(
         f"\n{partido['home']} {partido['home_goals']}-{partido['away_goals']} {partido['away']}"
         f"   min {partido['minute']}'  [{partido['status']}]"
-        f"   xG pre: {lambdas[0]:.2f}-{lambdas[1]:.2f}"
+        f"   goles esperados: {lambdas[0]:.2f}-{lambdas[1]:.2f} ({fuente})"
     )
     print(f"  {'Resultado':<28}{'Modelo':>8}{'Ask':>8}{'Edge':>8}{'ML justo':>10}{'ML merc':>10}{'1/4 Kelly':>11}  Senal")
     for f in filas:
@@ -361,14 +425,14 @@ class Tracker:
         self.ultima_senal = {}  # (match_id, lado) -> senal, para avisar solo en cambios
 
     def analyze(self, partido, precios):
-        """(lambdas, filas) del partido; no imprime ni guarda nada."""
-        lambdas = self.modelo.expected_goals(partido["home"], partido["away"])
+        """(lambdas, fuente, filas) del partido; no imprime ni guarda nada."""
+        lambdas, fuente = match_lambdas(self.modelo, partido, precios)
         probs = live_probabilities(*lambdas, partido["minute"], partido["home_goals"], partido["away_goals"])
-        return lambdas, evaluate(partido, probs, precios, self.edge_min)
+        return lambdas, fuente, evaluate(partido, probs, precios, self.edge_min)
 
     def process(self, partido, precios):
-        lambdas, filas = self.analyze(partido, precios)
-        print_match(partido, filas, lambdas)
+        lambdas, fuente, filas = self.analyze(partido, precios)
+        print_match(partido, filas, lambdas, fuente)
         for f in filas:
             clave = (partido["match_id"], f["lado"])
             if f["senal"] == "BUENO" and self.ultima_senal.get(clave) != "BUENO":

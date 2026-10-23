@@ -180,6 +180,33 @@ def live_probabilities(lam_home, lam_away, minute, home_goals, away_goals):
     return p_home / total, p_draw / total, p_away / total
 
 
+def fit_lambdas(p_home: float, p_draw: float, p_away: float):
+    """Lambdas (local, visita) cuyo 1X2 al minuto 0 se parece mas al dado.
+
+    Sirve para "anclar" el modelo al precio del mercado antes del partido:
+    el mercado sabe mas que nuestras estadisticas sobre la fuerza de cada
+    equipo, y el modelo solo agrega como cambian las probabilidades con
+    los goles y el tiempo. Busqueda en malla gruesa y luego fina.
+    """
+    total = p_home + p_draw + p_away
+    objetivo = (p_home / total, p_draw / total, p_away / total)
+
+    def error(lh, la):
+        probs = live_probabilities(lh, la, 0, 0, 0)
+        return sum((a - b) ** 2 for a, b in zip(probs, objetivo))
+
+    mejor = min(
+        ((lh / 10, la / 10) for lh in range(1, 51) for la in range(1, 51)),
+        key=lambda par: error(*par),
+    )
+    finos = [
+        (mejor[0] + i / 100, mejor[1] + j / 100)
+        for i in range(-10, 11) for j in range(-10, 11)
+        if mejor[0] + i / 100 > 0 and mejor[1] + j / 100 > 0
+    ]
+    return min(finos, key=lambda par: error(*par))
+
+
 def to_american(p: float):
     """Probabilidad -> momio americano (moneyline). None si p no es valida."""
     if p is None or p <= 0 or p >= 1:

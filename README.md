@@ -63,7 +63,7 @@ Si usas un entorno virtual, registra el kernel antes de abrir el notebook:
 `src/live/tracker.py` sigue los partidos de Champions en juego y cada 30 s indica, para local / empate / visita, si es buen momento para entrar al moneyline:
 
 1. Marcador y minuto desde football-data.org (usa el mismo `FOOTBALL_DATA_API_TOKEN`).
-2. Probabilidad 1X2 con `src/live/modelo.py`: goles esperados por equipo (estadísticas de `data/processed/`, con la tabla histórica como prior y ajuste por localía) y Poisson sobre el tiempo restante.
+2. Probabilidad 1X2 con `src/live/modelo.py`: Poisson sobre el tiempo restante. Los goles esperados se anclan al precio de Polymarket de justo antes del partido (antes del inicio, al precio actual), así que el modelo arranca igual que el mercado y solo se separa por los goles y el tiempo. Si no hay mercado, usa las estadísticas de `data/processed/` (tabla histórica como prior y ajuste por localía).
 3. Precio de compra (best ask) del mercado moneyline del partido en Polymarket (API pública).
 4. Señal `BUENO` si modelo − precio ≥ `--edge-min` (default 5 puntos); `ESPERAR` si la ventaja es positiva pero menor; `NO` si el mercado cobra más de lo que da el modelo. Avisa (con beep) solo cuando un resultado pasa a `BUENO`.
 
@@ -84,7 +84,7 @@ Requiere haber corrido antes `python -m src.processing.champions_league`. Cada e
 streamlit run streamlit_app.py
 ```
 
-También funciona con La Liga: en el dashboard elige "La Liga" en la barra lateral, y en la terminal usa `python -m src.live.tracker --competicion PD`. El modelo está construido con datos de Champions, así que en La Liga sus probabilidades antes del partido son poco confiables.
+También funciona con La Liga: en el dashboard elige "La Liga" en la barra lateral, y en la terminal usa `python -m src.live.tracker --competicion PD`. Como el modelo se ancla al precio de Polymarket, funciona igual en cualquier liga que tenga mercado.
 
 Para abrirlo desde internet (gratis) con Streamlit Community Cloud:
 1. Sube el repo a GitHub (tu fork). `data/live/modelo/` sí se versiona: es el snapshot de estadísticas que usa el modelo en la nube. Actualízalo con `python -m src.live.modelo` después de reprocesar datos.
