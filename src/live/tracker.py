@@ -52,6 +52,7 @@ LOGS_DIR.mkdir(parents=True, exist_ok=True)
 
 GAMMA_EVENTS_URL = "https://gamma-api.polymarket.com/events"
 POLYMARKET_TAG = "ucl"
+CLOB_HISTORY_URL = "https://clob.polymarket.com/prices-history"
 
 ESTADOS_EN_JUEGO = {"IN_PLAY", "PAUSED", "LIVE"}
 ESTADOS_PROGRAMADOS = {"TIMED", "SCHEDULED"}
@@ -217,13 +218,33 @@ class PolymarketMoneyline:
                 lado = "home"
             else:
                 lado = "away"
+            try:
+                token_id = json.loads(m.get("clobTokenIds") or "[]")[0]  # token del "Yes"
+            except (ValueError, IndexError):
+                token_id = None
             precios[lado] = {
+                "token_id": token_id,
                 "ask": _to_float(m.get("bestAsk")),
                 "bid": _to_float(m.get("bestBid")),
                 "last": _to_float(m.get("lastTradePrice")),
                 "liquidity": _to_float(m.get("liquidityNum")),
             }
         return precios
+
+
+def price_history(token_id, start_ts=None, fidelity=1):
+    """Serie [(datetime UTC, precio)] del token en Polymarket (desde start_ts o todo el historial)."""
+    params = {"market": token_id, "fidelity": fidelity}
+    if start_ts is None:
+        params["interval"] = "max"
+    else:
+        params["startTs"] = int(start_ts)
+    r = requests.get(CLOB_HISTORY_URL, params=params, timeout=20)
+    r.raise_for_status()
+    return [
+        (datetime.fromtimestamp(punto["t"], tz=timezone.utc), float(punto["p"]))
+        for punto in r.json().get("history", [])
+    ]
 
 
 # ---------------------------------------------------------------------------

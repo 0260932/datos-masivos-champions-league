@@ -20,7 +20,7 @@ import pandas as pd
 import streamlit as st
 
 from src.live.modelo import StrengthModel, live_probabilities
-from src.live.tracker import DemoTracker, PolymarketMoneyline, evaluate, fetch_live_matches
+from src.live.tracker import DemoTracker, PolymarketMoneyline, evaluate, fetch_live_matches, price_history
 
 HORA_MX = timezone(timedelta(hours=-6))  # CDMX no tiene horario de verano desde 2022
 COLORES_SENAL = {
@@ -29,6 +29,10 @@ COLORES_SENAL = {
     "NO": ("#b91c1c", "rgba(220,38,38,.14)"),
     "SIN MERCADO": ("#64748b", "rgba(100,116,139,.16)"),
 }
+# Colores de cada resultado en la grafica (como las lineas de Polymarket)
+COLORES_LADO = {"home": "#2d6cdf", "draw": "#8b95a5", "away": "#f2a23a"}
+# Rango de la grafica -> (horas hacia atras o None = todo, fidelidad en minutos)
+RANGOS = {"Partido": (None, 1), "6H": (6, 1), "1D": (24, 5), "1S": (24 * 7, 60), "Todo": (None, 180)}
 
 st.set_page_config(page_title="Moneyline UCL en vivo", page_icon="⚽", layout="wide")
 st.markdown(
@@ -45,6 +49,12 @@ st.markdown(
            font-size:.92rem; padding:1px 0}
     .fila span:first-child {opacity:.7}
     .grande {font-size:1.5rem; font-weight:800; font-variant-numeric:tabular-nums}
+    .pm-head {display:flex; flex-wrap:wrap; gap:6px 18px; align-items:baseline; margin:.6rem 0 .2rem}
+    .pm-lider {font-size:1.9rem; font-weight:800; font-variant-numeric:tabular-nums; line-height:1}
+    .pm-lider small {font-size:.95rem; font-weight:600; opacity:.65; margin-left:6px}
+    .pm-chip {display:inline-flex; align-items:center; gap:6px; font-size:.85rem;
+              font-variant-numeric:tabular-nums}
+    .pm-dot {width:9px; height:9px; border-radius:50%; display:inline-block}
     </style>
     """,
     unsafe_allow_html=True,
@@ -77,6 +87,11 @@ def precios_polymarket(match_id, home, away, utc_date):
     return polymarket().prices(partido)
 
 
+@st.cache_data(ttl=30, show_spinner=False)
+def historial_polymarket(token_id, start_ts, fidelity):
+    return price_history(token_id, start_ts, fidelity)
+
+
 def fmt_ml(v):
     return "–" if v is None else f"{v:+d}"
 
@@ -94,6 +109,7 @@ with st.sidebar:
     edge_min = st.slider("Ventaja minima para BUENO (puntos)", 2, 15, 5) / 100
     intervalo = st.select_slider("Actualizar cada", [15, 30, 60, 120], value=30, format_func=lambda s: f"{s} s")
     horas_previa = st.slider("Incluir partidos que empiezan en las proximas (horas)", 0, 48, 2)
+    rango = st.segmented_control("Rango de la grafica", list(RANGOS), default="Partido") or "Partido"
     demo = st.toggle("Modo demo (partido simulado)", help="Simula un partido para ver como se comporta el tablero.")
     st.caption(
         "Modelo: goles esperados por equipo (estadisticas del proyecto + tabla historica) "
@@ -118,7 +134,7 @@ if not demo:
 # Panel que se refresca solo
 # ---------------------------------------------------------------------------
 
-def tarjeta(partido, filas, lambdas):
+def tarjeta(partido, filas, lambdas, precios):
     with st.container(border=True):
         izq, der = st.columns([3, 1])
         with izq:
@@ -159,20 +175,116 @@ def tarjeta(partido, filas, lambdas):
                 unsafe_allow_html=True,
             )
 
-        hist = pd.DataFrame(estado["historial"].get(partido["match_id"], []))
-        if len(hist) > 1 and hist["edge"].notna().any():
-            base = alt.Chart(hist.dropna(subset=["edge"]))
-            lineas = base.mark_line(point=True).encode(
-                x=alt.X("hora:T", title=None, axis=alt.Axis(format="%H:%M")),
-                y=alt.Y("edge_pts:Q", title="Ventaja (pts)"),
-                color=alt.Color("equipo:N", title=None, legend=alt.Legend(orient="bottom")),
-                tooltip=["equipo", "minuto", alt.Tooltip("edge_pts:Q", format="+.1f"),
-                         alt.Tooltip("p_modelo:Q", format=".1%"), alt.Tooltip("ask:Q", format=".1%")],
+        grafica_polymarket(partido, filas, precios)
+
+
+def serie_mercado(partido, precios, lado):
+    """Historial del precio del resultado: de Polymarket si hay token, si no el visto en esta sesion."""
+    token = precios.get(lado, {}).get("token_id")
+    if token:
+        horas, fidelidad = RANGOS[rango]
+        if rango == "Partido":
+            # en juego: desde 1 h antes del inicio; en previa: las ultimas 24 h
+            inicio = min(partido["utc_date"] - timedelta(hours=1), datetime.now(timezone.utc) - timedelta(hours=24))
+            if partido["utc_date"] <= datetime.now(timezone.utc):
+                inicio = partido["utc_date"] - timedelta(hours=1)
+        elif horas is not None:
+            inicio = datetime.now(timezone.utc) - timedelta(hours=horas)
+        else:
+            inicio = None
+        try:
+            puntos = historial_polymarket(token, None if inicio is None else inicio.timestamp(), fidelidad)
+        except Exception:
+            puntos = []
+        if puntos:
+            return pd.DataFrame(
+                [{"hora": t.astimezone(HORA_MX).replace(tzinfo=None), "p": p} for t, p in puntos]
             )
-            umbral = alt.Chart(pd.DataFrame({"y": [edge_min * 100]})).mark_rule(
-                strokeDash=[4, 4], color="#15803d"
-            ).encode(y="y:Q")
-            st.altair_chart((lineas + umbral).properties(height=180), width="stretch")
+    vistos = [
+        h for h in estado["historial"].get(partido["match_id"], [])
+        if h["lado"] == lado and h["ask"] is not None
+    ]
+    return pd.DataFrame([{"hora": h["hora"], "p": h["ask"]} for h in vistos])
+
+
+def grafica_polymarket(partido, filas, precios):
+    nombres = {f["lado"]: f["equipo"] for f in filas}
+    orden = ("home", "draw", "away")
+    partes = []
+    for lado in orden:
+        mercado = serie_mercado(partido, precios, lado)
+        if not mercado.empty:
+            mercado["serie"], mercado["fuente"] = nombres[lado], "Mercado"
+            partes.append(mercado)
+        modelo_hist = [h for h in estado["historial"].get(partido["match_id"], []) if h["lado"] == lado]
+        if modelo_hist:
+            partes.append(pd.DataFrame([
+                {"hora": h["hora"], "p": h["p_modelo"], "serie": nombres[lado], "fuente": "Modelo"}
+                for h in modelo_hist
+            ]))
+    if not partes:
+        return
+    datos = pd.concat(partes, ignore_index=True)
+
+    # el ultimo precio de mercado se estira hasta "ahora" para que la linea llegue al borde
+    ultimo = datos[datos["fuente"] == "Mercado"].sort_values("hora").groupby("serie").tail(1).copy()
+    ultimo["hora"] = datetime.now(HORA_MX).replace(tzinfo=None)
+    datos = pd.concat([datos, ultimo], ignore_index=True)
+
+    # Encabezado tipo Polymarket: % del favorito y chips con el % actual de cada resultado
+    actuales = dict(zip(ultimo["serie"], ultimo["p"]))
+    if actuales:
+        lider = max(actuales, key=actuales.get)
+        chips = "".join(
+            f"<span class='pm-chip'><span class='pm-dot' style='background:{COLORES_LADO[lado]}'></span>"
+            f"{nombres[lado]} <b>{actuales[nombres[lado]]:.0%}</b></span>"
+            for lado in orden if nombres[lado] in actuales
+        )
+        st.markdown(
+            f"<div class='pm-head'><span class='pm-lider'>{actuales[lider]:.0%}<small>{lider}</small></span>"
+            f"{chips}</div>",
+            unsafe_allow_html=True,
+        )
+
+    colores = alt.Scale(domain=[nombres[l] for l in orden], range=[COLORES_LADO[l] for l in orden])
+    base = alt.Chart(datos).encode(
+        x=alt.X("hora:T", title=None,
+                axis=alt.Axis(format="%H:%M", grid=False, domain=False, tickCount=6, labelOpacity=0.6)),
+        y=alt.Y("p:Q", title=None, scale=alt.Scale(domain=[0, 1]),
+                axis=alt.Axis(format=".0%", orient="right", values=[0, 0.25, 0.5, 0.75, 1],
+                              gridDash=[2, 3], gridOpacity=0.35, domain=False, ticks=False, labelOpacity=0.6)),
+        color=alt.Color("serie:N", scale=colores, legend=None),
+    )
+    linea_mercado = base.transform_filter(alt.datum.fuente == "Mercado").mark_line(
+        interpolate="step-after", strokeWidth=2.2
+    )
+    linea_modelo = base.transform_filter(alt.datum.fuente == "Modelo").mark_line(
+        strokeDash=[5, 4], strokeWidth=1.6, opacity=0.85
+    )
+    # separa las etiquetas finales que quedan encimadas (minimo 6 puntos entre una y otra)
+    ultimo = ultimo.sort_values("p").copy()
+    posiciones = []
+    for p in ultimo["p"]:
+        posiciones.append(max(p, posiciones[-1] + 0.06) if posiciones else p)
+    ultimo["p_etiqueta"] = posiciones
+    etiquetas = alt.Chart(ultimo).mark_text(align="left", dx=6, fontWeight="bold", fontSize=12).encode(
+        x="hora:T", y="p_etiqueta:Q", text=alt.Text("p:Q", format=".0%"),
+        color=alt.Color("serie:N", scale=colores, legend=None),
+    )
+    # crosshair: linea vertical + puntos en el momento mas cercano al mouse
+    cerca = alt.selection_point(nearest=True, on="pointerover", fields=["hora"], empty=False, clear="pointerout")
+    selector = alt.Chart(datos).mark_rule(opacity=0).encode(x="hora:T").add_params(cerca)
+    regla = alt.Chart(datos).mark_rule(color="#8b95a5", strokeWidth=1).encode(x="hora:T").transform_filter(cerca)
+    puntos = base.mark_point(filled=True, size=45).transform_filter(cerca).encode(
+        tooltip=[alt.Tooltip("serie:N", title="Resultado"), alt.Tooltip("fuente:N", title="Serie"),
+                 alt.Tooltip("p:Q", title="Prob.", format=".1%"),
+                 alt.Tooltip("hora:T", title="Hora", format="%H:%M")]
+    )
+    grafica = (linea_mercado + linea_modelo + etiquetas + selector + regla + puntos).properties(
+        height=260
+    ).configure_view(strokeWidth=0)
+    st.altair_chart(grafica, width="stretch")
+    st.caption("Línea continua: precio en Polymarket · punteada: probabilidad del modelo")
 
 
 def registrar(partido, filas):
@@ -180,7 +292,7 @@ def registrar(partido, filas):
     hist = estado["historial"].setdefault(partido["match_id"], [])
     for f in filas:
         hist.append({
-            "hora": ahora, "minuto": partido["minute"], "equipo": f["equipo"],
+            "hora": ahora, "minuto": partido["minute"], "equipo": f["equipo"], "lado": f["lado"],
             "edge": f["edge"], "edge_pts": None if f["edge"] is None else f["edge"] * 100,
             "p_modelo": f["p_modelo"], "ask": f["ask"],
         })
@@ -227,7 +339,7 @@ def panel():
         probs = live_probabilities(*lambdas, partido["minute"], partido["home_goals"], partido["away_goals"])
         filas = evaluate(partido, probs, precios, edge_min)
         registrar(partido, filas)
-        tarjeta(partido, filas, lambdas)
+        tarjeta(partido, filas, lambdas, precios)
 
     st.subheader("Avisos")
     if estado["avisos"]:
