@@ -74,7 +74,7 @@ python -m src.live.tracker --una-vez       # una sola pasada
 python -m src.live.tracker --demo          # partido simulado, sin APIs
 ```
 
-Junto a cada partido se muestra, como segunda opinión, el XGBoost del proyecto (`src/models/xgboost_resultado.py`, el del notebook 02) con su exactitud validada; no cambia la señal porque en la validación no superó a "siempre gana el local". Para reentrenarlo: `python -m src.models.xgboost_resultado`. Las decisiones de diseño están en `docs/decisions.md`.
+Junto a cada partido se muestra, como segunda opinión, el XGBoost del proyecto (`src/models/xgboost_resultado.py`, el del notebook 02) con su exactitud validada; no cambia la señal porque en la validación hacia adelante (5 temporadas, 4 cortes) quedó prácticamente igual que predecir siempre la clase más común (49% contra 48%). Para reentrenarlo: `python -m src.models.xgboost_resultado`. Las decisiones de diseño están en `docs/decisions.md`.
 
 Requiere haber corrido antes `python -m src.processing.champions_league`. Cada evaluación se guarda en `data/interim/live/senales_<fecha>.csv` y los avisos en `logs/live_tracker.log`. El modelo es simple (no considera tarjetas rojas, alineaciones ni cambios); úsalo como referencia contra el mercado, no como garantía.
 

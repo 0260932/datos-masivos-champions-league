@@ -6,5 +6,7 @@ matplotlib
 kagglehub
 xgboost
 scikit-learn
+pytest
+pyarrow
 streamlit
 altair

@@ -385,8 +385,9 @@ def tira_xgb(partido, filas):
     nota = ""
     if m:
         nota = (
-            f"Exactitud validada {m['exactitud']:.0%} (temporada {m['temporada_prueba']}) contra "
-            f"{m['exactitud_linea_base']:.0%} de «siempre gana el local». Solo referencia: no cambia la señal."
+            f"Exactitud validada {m['exactitud']:.0%} contra {m['exactitud_linea_base']:.0%} de "
+            f"{m['linea_base']} (promedio de {len(m.get('cortes', []))} temporadas, validación hacia adelante). "
+            "Solo referencia: no cambia la señal."
         )
     return (
         "<div class='xgb'><span class='xgb-t'>Segunda opinión · XGBoost del proyecto (previa)</span>"
@@ -582,7 +583,8 @@ def metodo():
             "<li><b>Segunda opinión.</b> Arriba de las tarjetas aparece el XGBoost del proyecto "
             "(src/models/xgboost_resultado.py, el mismo del notebook 02), que predice el resultado con "
             "las estadísticas de temporada de cada equipo. Se muestra con su exactitud validada y no "
-            "cambia la señal: en la validación no superó a «siempre gana el local».</li>"
+            "cambia la señal: en la validación hacia adelante quedó prácticamente igual que predecir "
+            "siempre la clase más común (49% contra 48%).</li>"
             "<li><b>Marcador.</b> El calendario, los nombres y los escudos vienen de football-data.org; el "
             "marcador y el minuto en vivo, del scoreboard público de ESPN, porque el plan gratuito de "
             "football-data.org no actualiza los partidos en juego a tiempo. Si ninguna fuente trae el "

@@ -1,12 +1,42 @@
 {
-  "temporada_entrenamiento": 2023,
-  "temporada_prueba": 2026,
-  "partidos_entrenamiento": 125,
-  "partidos_prueba": 45,
-  "exactitud": 0.4,
-  "exactitud_linea_base": 0.5777777777777777,
-  "linea_base": "siempre 'H'",
-  "exactitud_con_historial": 0.5,
-  "partidos_con_historial": 6,
-  "partidos_modelo_final": 170
+  "diseno": "walk-forward (igual que notebooks/02_modelo_prediccion_xgboost.ipynb)",
+  "cortes": [
+    {
+      "temporada_prueba": 2022,
+      "temporadas_entrenamiento": 1,
+      "partidos_prueba": 125,
+      "exactitud": 0.416,
+      "exactitud_linea_base": 0.424,
+      "linea_base": "siempre 'H'"
+    },
+    {
+      "temporada_prueba": 2023,
+      "temporadas_entrenamiento": 2,
+      "partidos_prueba": 125,
+      "exactitud": 0.512,
+      "exactitud_linea_base": 0.488,
+      "linea_base": "siempre 'H'"
+    },
+    {
+      "temporada_prueba": 2024,
+      "temporadas_entrenamiento": 3,
+      "partidos_prueba": 189,
+      "exactitud": 0.5185185185185185,
+      "exactitud_linea_base": 0.5079365079365079,
+      "linea_base": "siempre 'H'"
+    },
+    {
+      "temporada_prueba": 2025,
+      "temporadas_entrenamiento": 4,
+      "partidos_prueba": 189,
+      "exactitud": 0.5132275132275133,
+      "exactitud_linea_base": 0.4973544973544973,
+      "linea_base": "siempre 'H'"
+    }
+  ],
+  "exactitud": 0.48993650793650795,
+  "exactitud_linea_base": 0.4793227513227513,
+  "linea_base": "la clase más común",
+  "cortes_que_superan_linea_base": 3,
+  "partidos_modelo_final": 798
 }

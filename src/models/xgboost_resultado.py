@@ -6,15 +6,16 @@ para que la plataforma en vivo lo use como segunda opinion:
 - Mismas variables: promedio de goles a favor y en contra y win rate de
   cada equipo, mas una bandera de si el equipo tiene historial.
 - Mismos hiperparametros (100 arboles, profundidad 3, learning rate 0.1).
-- Misma validacion: entrenar con una temporada y predecir la siguiente con
-  las estadisticas de la primera congeladas. Se guarda la exactitud del
-  modelo y la de la linea base "siempre gana el local" para mostrarlas
-  junto a cada prediccion.
+- Misma validacion hacia adelante (walk-forward) que el notebook: para
+  predecir cada temporada completa se entrena solo con las anteriores, con
+  estadisticas agregadas de esas temporadas, y se compara contra la linea
+  base "la clase mas comun". Se guardan los resultados por corte y el
+  promedio para mostrarlos junto a cada prediccion.
 
-El modelo final se entrena con todos los partidos terminados (cada
-temporada con sus propias estadisticas). Para predecir se usan las
-estadisticas de la temporada mas reciente en que aparece cada equipo, y el
-promedio de la liga si no aparece (bandera de historial = 0).
+El modelo final se entrena con todos los partidos terminados (temporadas
+completas mas lo jugado de la actual), con estadisticas agregadas de todos
+ellos, igual que en cada corte de la validacion. Si un equipo no tiene
+partidos se usa el promedio de la liga (bandera de historial = 0).
 
 Entrada: data/interim/champions_league/matches_clean.csv
          (python -m src.processing.champions_league)
@@ -48,6 +49,8 @@ FEATURES = [
     "away_prom_gf", "away_prom_gc", "away_win_rate", "away_tiene_historial",
 ]
 CLASES = ["A", "D", "H"]  # mismo orden que el LabelEncoder del notebook
+# Temporadas completas del historico (las mismas que usa el notebook 02)
+TEMPORADAS_COMPLETAS = [2021, 2022, 2023, 2024, 2025]
 HIPERPARAMETROS = dict(n_estimators=100, max_depth=3, learning_rate=0.1, random_state=42, eval_metric="mlogloss")
 
 logger = logging.getLogger(__name__)
@@ -133,36 +136,41 @@ def cargar_partidos() -> pd.DataFrame:
     return unificar_nombres(partidos)
 
 
+def _promedio(stats):
+    return stats[["prom_goles_favor", "prom_goles_contra", "win_rate"]].mean()
+
+
 def validar(partidos: pd.DataFrame) -> dict:
-    """Entrena con la penultima temporada y predice la ultima con estadisticas congeladas."""
-    temporadas = sorted(partidos["season"].unique())
-    if len(temporadas) < 2:
+    """Validacion hacia adelante sobre las temporadas completas (como el notebook 02)."""
+    completas = [t for t in TEMPORADAS_COMPLETAS if t in set(partidos["season"])]
+    cortes = []
+    for t_test in completas[1:]:
+        train = partidos[partidos["season"].isin([t for t in completas if t < t_test])]
+        test = partidos[partidos["season"] == t_test]
+        stats = calcular_stats_equipo(train)
+        x_train = construir_features(train, stats, _promedio(stats))
+        x_test = construir_features(test, stats, _promedio(stats))
+        modelo = XGBClassifier(**HIPERPARAMETROS)
+        modelo.fit(x_train[FEATURES], _codificar(x_train["resultado"]))
+        y_test = _codificar(x_test["resultado"])
+        clase_comun = _codificar(x_train["resultado"]).mode()[0]
+        cortes.append({
+            "temporada_prueba": int(t_test),
+            "temporadas_entrenamiento": int(len(train["season"].unique())),
+            "partidos_prueba": int(len(test)),
+            "exactitud": float(accuracy_score(y_test, modelo.predict(x_test[FEATURES]))),
+            "exactitud_linea_base": float(accuracy_score(y_test, [clase_comun] * len(y_test))),
+            "linea_base": f"siempre '{CLASES[clase_comun]}'",
+        })
+    if not cortes:
         return {}
-    t_train, t_test = temporadas[-2], temporadas[-1]
-    train, test = partidos[partidos["season"] == t_train], partidos[partidos["season"] == t_test]
-    stats = calcular_stats_equipo(train)
-    promedio = stats[["prom_goles_favor", "prom_goles_contra", "win_rate"]].mean()
-
-    x_train = construir_features(train, stats, promedio)
-    x_test = construir_features(test, stats, promedio)
-    modelo = XGBClassifier(**HIPERPARAMETROS)
-    modelo.fit(x_train[FEATURES], _codificar(x_train["resultado"]))
-
-    y_test = _codificar(x_test["resultado"])
-    pred = modelo.predict(x_test[FEATURES])
-    clase_comun = _codificar(x_train["resultado"]).mode()[0]
-    con_historial = (x_test["home_tiene_historial"] == 1) & (x_test["away_tiene_historial"] == 1)
     return {
-        "temporada_entrenamiento": int(t_train),
-        "temporada_prueba": int(t_test),
-        "partidos_entrenamiento": int(len(train)),
-        "partidos_prueba": int(len(test)),
-        "exactitud": float(accuracy_score(y_test, pred)),
-        "exactitud_linea_base": float(accuracy_score(y_test, [clase_comun] * len(y_test))),
-        "linea_base": f"siempre '{CLASES[clase_comun]}'",
-        "exactitud_con_historial": float(accuracy_score(y_test[con_historial], pred[con_historial.values]))
-        if con_historial.any() else None,
-        "partidos_con_historial": int(con_historial.sum()),
+        "diseno": "walk-forward (igual que notebooks/02_modelo_prediccion_xgboost.ipynb)",
+        "cortes": cortes,
+        "exactitud": sum(c["exactitud"] for c in cortes) / len(cortes),
+        "exactitud_linea_base": sum(c["exactitud_linea_base"] for c in cortes) / len(cortes),
+        "linea_base": "la clase más común",
+        "cortes_que_superan_linea_base": sum(c["exactitud"] > c["exactitud_linea_base"] for c in cortes),
     }
 
 
@@ -171,25 +179,15 @@ def entrenar():
     metricas = validar(partidos)
     logger.info("Validacion: %s", metricas)
 
-    # Modelo final: cada temporada con sus propias estadisticas
-    bloques, stats_por_temporada = [], []
-    for temporada, grupo in partidos.groupby("season"):
-        stats = calcular_stats_equipo(grupo)
-        promedio = stats[["prom_goles_favor", "prom_goles_contra", "win_rate"]].mean()
-        bloques.append(construir_features(grupo, stats, promedio))
-        stats_por_temporada.append(stats.assign(season=temporada))
-    datos = pd.concat(bloques, ignore_index=True)
+    # Modelo final: todos los partidos terminados con estadisticas agregadas (como cada corte)
+    stats = calcular_stats_equipo(partidos)
+    datos = construir_features(partidos, stats, _promedio(stats))
     modelo = XGBClassifier(**HIPERPARAMETROS)
     modelo.fit(datos[FEATURES], _codificar(datos["resultado"]))
 
-    # Para predecir: la temporada mas reciente de cada equipo
-    stats = (
-        pd.concat(stats_por_temporada).reset_index()
-        .sort_values("season").drop_duplicates("team", keep="last")
-    )
     SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
     modelo.save_model(MODELO_PATH)
-    stats.to_csv(STATS_PATH, index=False)
+    stats.reset_index().to_csv(STATS_PATH, index=False)
     metricas["partidos_modelo_final"] = int(len(datos))
     METRICAS_PATH.write_text(json.dumps(metricas, indent=2, ensure_ascii=False), encoding="utf-8")
     logger.info("Modelo guardado en %s (%d partidos)", MODELO_PATH, len(datos))
