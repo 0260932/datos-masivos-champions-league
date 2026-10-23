@@ -90,7 +90,7 @@ def fetch_live_matches(minutos_previa: int):
     ahora = datetime.now(timezone.utc)
     params = {
         "dateFrom": (ahora - timedelta(days=1)).date().isoformat(),
-        "dateTo": (ahora + timedelta(days=1)).date().isoformat(),
+        "dateTo": (ahora + timedelta(days=1, minutes=minutos_previa)).date().isoformat(),
     }
     url = f"{API_BASE_URL}/competitions/{COMPETITION_CODE}/matches"
     response = requests.get(
@@ -331,10 +331,14 @@ class Tracker:
         self.minutos_previa = minutos_previa
         self.ultima_senal = {}  # (match_id, lado) -> senal, para avisar solo en cambios
 
-    def process(self, partido, precios):
+    def analyze(self, partido, precios):
+        """(lambdas, filas) del partido; no imprime ni guarda nada."""
         lambdas = self.modelo.expected_goals(partido["home"], partido["away"])
         probs = live_probabilities(*lambdas, partido["minute"], partido["home_goals"], partido["away_goals"])
-        filas = evaluate(partido, probs, precios, self.edge_min)
+        return lambdas, evaluate(partido, probs, precios, self.edge_min)
+
+    def process(self, partido, precios):
+        lambdas, filas = self.analyze(partido, precios)
         print_match(partido, filas, lambdas)
         for f in filas:
             clave = (partido["match_id"], f["lado"])
@@ -369,8 +373,8 @@ class DemoTracker(Tracker):
         }
         self.precio_mercado = None
 
-    def tick(self):
-        print(f"\n=== {datetime.now().strftime('%H:%M:%S')} (DEMO) ===")
+    def step(self):
+        """Avanza el partido simulado y regresa (partido, precios)."""
         p = self.partido
         lam_h, lam_a = self.modelo.expected_goals(p["home"], p["away"])
         p["minute"] = min(95, p["minute"] + 5)
@@ -393,8 +397,13 @@ class DemoTracker(Tracker):
             lado: {"ask": round(precio + 0.01, 3)}
             for lado, precio in zip(("home", "draw", "away"), self.precio_mercado)
         }
-        self.process(p, precios)
-        return p["status"] == "FINISHED"
+        return p, precios
+
+    def tick(self):
+        print(f"\n=== {datetime.now().strftime('%H:%M:%S')} (DEMO) ===")
+        partido, precios = self.step()
+        self.process(partido, precios)
+        return partido["status"] == "FINISHED"
 
 
 def main():

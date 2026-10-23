@@ -6,3 +6,5 @@ matplotlib
 kagglehub
 xgboost
 scikit-learn
+streamlit
+altair

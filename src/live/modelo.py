@@ -26,6 +26,9 @@ import pandas as pd
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 PROCESSED_DIR = ROOT_DIR / "data" / "processed" / "champions_league"
+# Copia chica de las estadisticas que si se sube a git, para correr el
+# dashboard en la nube (data/processed/ esta en .gitignore).
+SNAPSHOT_DIR = ROOT_DIR / "data" / "live" / "modelo"
 
 MINUTOS_PARTIDO = 95  # 90 + reposicion promedio
 FACTOR_LOCALIA = 1.12  # se multiplica al local y se divide a la visita
@@ -88,26 +91,34 @@ class StrengthModel:
             p for p in processed_dir.glob("season=*")
             if p.name.split("=", 1)[1].isdigit()
         )
-        if not temporadas:
+        if temporadas:
+            actual = pd.read_csv(temporadas[-1] / "team_stats.csv")
+            actual["peso"] = 1.0
+            partes = [actual]
+            if len(temporadas) > 1:
+                anterior = pd.read_csv(temporadas[-2] / "team_stats.csv")
+                anterior["peso"] = PESO_TEMPORADA_ANTERIOR
+                partes.append(anterior)
+            self.recent = pd.concat(partes, ignore_index=True)
+            hist_path = processed_dir / "historical_performance.csv"
+            self.historical = pd.read_csv(hist_path) if hist_path.exists() else pd.DataFrame()
+        elif (SNAPSHOT_DIR / "recent.csv").exists():
+            self.recent = pd.read_csv(SNAPSHOT_DIR / "recent.csv")
+            self.historical = pd.read_csv(SNAPSHOT_DIR / "historical_performance.csv")
+        else:
             raise RuntimeError(
-                f"No hay temporadas procesadas en {processed_dir}. "
+                f"No hay temporadas procesadas en {processed_dir} ni snapshot en {SNAPSHOT_DIR}. "
                 "Corre primero: python -m src.processing.champions_league"
             )
 
-        actual = pd.read_csv(temporadas[-1] / "team_stats.csv")
-        actual["peso"] = 1.0
-        partes = [actual]
-        if len(temporadas) > 1:
-            anterior = pd.read_csv(temporadas[-2] / "team_stats.csv")
-            anterior["peso"] = PESO_TEMPORADA_ANTERIOR
-            partes.append(anterior)
-        self.recent = pd.concat(partes, ignore_index=True)
-
-        hist_path = processed_dir / "historical_performance.csv"
-        self.historical = pd.read_csv(hist_path) if hist_path.exists() else pd.DataFrame()
-
         mp = self.recent["matches_played"] * self.recent["peso"]
         self.league_avg = float((self.recent["goals_for_avg"] * mp).sum() / mp.sum())
+
+    def export_snapshot(self, out_dir: Path = SNAPSHOT_DIR):
+        out_dir.mkdir(parents=True, exist_ok=True)
+        self.recent.to_csv(out_dir / "recent.csv", index=False)
+        self.historical.to_csv(out_dir / "historical_performance.csv", index=False)
+        return out_dir
 
     def rating(self, team: str) -> TeamRating:
         prior_gf = prior_ga = self.league_avg
@@ -183,3 +194,9 @@ def kelly_fraction(p_model: float, price: float) -> float:
     if price is None or price <= 0 or price >= 1:
         return 0.0
     return max(0.0, (p_model - price) / (1 - price))
+
+
+if __name__ == "__main__":
+    # python -m src.live.modelo  ->  actualiza el snapshot que usa el dashboard
+    destino = StrengthModel().export_snapshot()
+    print(f"Snapshot del modelo guardado en {destino}")

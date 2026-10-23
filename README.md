@@ -76,6 +76,20 @@ python -m src.live.tracker --demo          # partido simulado, sin APIs
 
 Requiere haber corrido antes `python -m src.processing.champions_league`. Cada evaluación se guarda en `data/interim/live/senales_<fecha>.csv` y los avisos en `logs/live_tracker.log`. El modelo es simple (no considera tarjetas rojas, alineaciones ni cambios); úsalo como referencia contra el mercado, no como garantía.
 
+### Dashboard web (Streamlit)
+
+`streamlit_app.py` muestra lo mismo en una página que se actualiza sola: tarjeta por partido con marcador, señal por resultado, gráfica de la ventaja en el tiempo y avisos. Tiene modo demo en la barra lateral.
+
+```
+streamlit run streamlit_app.py
+```
+
+Para abrirlo desde internet (gratis) con Streamlit Community Cloud:
+1. Sube el repo a GitHub (tu fork). `data/live/modelo/` sí se versiona: es el snapshot de estadísticas que usa el modelo en la nube. Actualízalo con `python -m src.live.modelo` después de reprocesar datos.
+2. En share.streamlit.io, entra con tu cuenta de GitHub, "Create app", elige el repo, la rama y `streamlit_app.py`.
+3. En "Advanced settings" > Secrets pon: `FOOTBALL_DATA_API_TOKEN = "tu_token"`.
+4. Deploy. Te da un link `https://<nombre>.streamlit.app` que abre en cualquier navegador o celular.
+
 ## Resultados principales
 Con los primeros 8 partidos finalizados de la fase de liga 2026, el equipo local promedió 2.25 goles por partido contra 1.62 del visitante (ver notebooks/01_extraccion_y_diagnostico.ipynb, sección "Primera evidencia", y la gráfica en docs/goles_local_vs_visitante.png).
 
@@ -90,6 +104,8 @@ Con los primeros 8 partidos finalizados de la fase de liga 2026, el equipo local
 - src/ingestion/: scripts de descarga (uno por fuente)
 - src/processing/: pipeline de limpieza y transformación
 - src/live/: tracker en vivo de moneyline (modelo + loop)
+- streamlit_app.py: dashboard web del tracker
+- data/live/modelo/: snapshot de estadísticas para el modelo en la nube
 - src/validation/: validaciones de calidad de datos
 - tests/: pruebas automáticas
 - .env.example
