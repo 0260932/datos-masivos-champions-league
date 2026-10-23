@@ -1,5 +1,5 @@
 """
-Dashboard web del tracker de moneyline (Champions League / La Liga).
+Dashboard web del tracker de moneyline (Champions League, La Liga, Premier League).
 
 Muestra en una pagina que se actualiza sola los partidos en juego, la
 probabilidad del modelo contra el precio de Polymarket y la senal
@@ -34,7 +34,9 @@ from src.live.tracker import (
 HORA_MX = timezone(timedelta(hours=-6))  # CDMX no tiene horario de verano desde 2022
 DIAS = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"]
 MESES = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"]
-EMBLEMAS = {"CL": "https://crests.football-data.org/CL.png", "PD": "https://crests.football-data.org/laliga.png"}
+EMBLEMAS = {"CL": "https://crests.football-data.org/CL.png", "PD": "https://crests.football-data.org/laliga.png",
+    "PL": "https://crests.football-data.org/PL.png",
+}
 DEMO = {
     "home": "Arsenal FC", "away": "FC Bayern München",
     "home_short": "Arsenal", "away_short": "Bayern",
@@ -418,7 +420,8 @@ def grafica_polymarket(partido, filas, precios):
     colores = alt.Scale(domain=[nombres[l] for l in orden], range=[COLORES_LADO[l] for l in orden])
     base = alt.Chart(datos).encode(
         x=alt.X("hora:T", title=None,
-                axis=alt.Axis(format="%H:%M", grid=False, domain=False, tickCount=6,
+                axis=alt.Axis(format="%d/%m" if rango in ("1S", "Todo") else "%H:%M",
+                              grid=False, domain=False, tickCount=6,
                               labelColor="#8796b8", tickColor="#22304f")),
         y=alt.Y("p:Q", title=None, scale=alt.Scale(domain=[0, 1]),
                 axis=alt.Axis(format=".0%", orient="right", values=[0, 0.25, 0.5, 0.75, 1],
@@ -427,10 +430,10 @@ def grafica_polymarket(partido, filas, precios):
         color=alt.Color("serie:N", scale=colores, legend=None),
     )
     linea_mercado = base.transform_filter(alt.datum.fuente == "Mercado").mark_line(
-        interpolate="step-after", strokeWidth=2.4
+        interpolate="basis", strokeWidth=2.6, strokeCap="round", strokeJoin="round"
     )
     linea_modelo = base.transform_filter(alt.datum.fuente == "Modelo").mark_line(
-        strokeDash=[5, 4], strokeWidth=1.6, opacity=0.9
+        interpolate="basis", strokeDash=[5, 4], strokeWidth=1.6, opacity=0.9
     )
     # separa las etiquetas finales que quedan encimadas (minimo 6 puntos entre una y otra)
     ultimo = ultimo.sort_values("p").copy()
@@ -451,7 +454,7 @@ def grafica_polymarket(partido, filas, precios):
     puntos = base.mark_point(filled=True, size=50).transform_filter(cerca).encode(
         tooltip=[alt.Tooltip("serie:N", title="Resultado"), alt.Tooltip("fuente:N", title="Serie"),
                  alt.Tooltip("p:Q", title="Prob.", format=".1%"),
-                 alt.Tooltip("hora:T", title="Hora", format="%H:%M")]
+                 alt.Tooltip("hora:T", title="Hora", format="%d/%m %H:%M")]
     )
     grafica = (linea_mercado + linea_modelo + etiquetas + selector + regla + puntos).properties(
         height=250, background="transparent"

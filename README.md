@@ -84,7 +84,7 @@ Requiere haber corrido antes `python -m src.processing.champions_league`. Cada e
 streamlit run streamlit_app.py
 ```
 
-También funciona con La Liga: en el dashboard elige "La Liga" en la barra lateral, y en la terminal usa `python -m src.live.tracker --competicion PD`. Como el modelo se ancla al precio de Polymarket, funciona igual en cualquier liga que tenga mercado.
+También funciona con La Liga y la Premier League: en el dashboard elígela en la barra lateral, y en la terminal usa `--competicion PD` (La Liga) o `--competicion PL` (Premier). Como el modelo se ancla al precio de Polymarket, funciona igual en cualquier liga que tenga mercado.
 
 Para abrirlo desde internet (gratis) con Streamlit Community Cloud:
 1. Sube el repo a GitHub (tu fork). `data/live/modelo/` sí se versiona: es el snapshot de estadísticas que usa el modelo en la nube. Actualízalo con `python -m src.live.modelo` después de reprocesar datos.

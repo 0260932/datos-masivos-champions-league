@@ -56,6 +56,7 @@ GAMMA_EVENTS_URL = "https://gamma-api.polymarket.com/events"
 COMPETICIONES = {
     "CL": ("Champions League", "ucl"),
     "PD": ("La Liga", "la-liga"),
+    "PL": ("Premier League", "premier-league"),
 }
 CLOB_HISTORY_URL = "https://clob.polymarket.com/prices-history"
 
@@ -500,9 +501,9 @@ class DemoTracker(Tracker):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Tracker en vivo de moneyline (Champions League / La Liga)")
+    parser = argparse.ArgumentParser(description="Tracker en vivo de moneyline (Champions, La Liga, Premier League)")
     parser.add_argument("--competicion", choices=list(COMPETICIONES), default="CL",
-                        help="CL = Champions League, PD = La Liga (default CL)")
+                        help="CL = Champions League, PD = La Liga, PL = Premier League (default CL)")
     parser.add_argument("--intervalo", type=int, default=30, help="Segundos entre actualizaciones (default 30)")
     parser.add_argument("--edge-min", type=float, default=0.05,
                         help="Ventaja minima modelo - precio para marcar BUENO (default 0.05 = 5 puntos)")
