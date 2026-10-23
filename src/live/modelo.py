@@ -17,12 +17,12 @@ como verdad absoluta.
 
 import difflib
 import math
-import re
-import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 
 import pandas as pd
+
+from src.processing.polymarket import ALIAS, normalizar_nombre
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 PROCESSED_DIR = ROOT_DIR / "data" / "processed" / "champions_league"
@@ -39,33 +39,43 @@ MAX_GOLES_RESTANTES = 10
 # (segundos tiempos con mas goles, el que pierde arriesga): +-20%.
 VARIACION_RITMO = 0.20
 
-PALABRAS_RUIDO = {
-    "fc", "cf", "afc", "sc", "ac", "as", "ssc", "sl", "sk", "fk", "club",
-    "de", "the", "calcio", "futbol", "football", "1907", "1899", "1909",
-}
+# Los nombres se normalizan con las mismas reglas y alias que el pipeline de
+# Polymarket del proyecto (src/processing/polymarket.py), para que un equipo
+# se reconozca igual en todas las fuentes.
+_GRUPOS_ALIAS = {}
+for _canonico, _alias in ALIAS.items():
+    _grupo = {normalizar_nombre(n) for n in [_canonico, *_alias]} - {""}
+    for _clave in _grupo:
+        _GRUPOS_ALIAS.setdefault(_clave, set()).update(_grupo)
 
 
-def normalize_name(name: str) -> str:
-    """Nombre en minusculas, sin acentos ni palabras de relleno (FC, CF...)."""
-    if not isinstance(name, str):
-        return ""
-    texto = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode()
-    tokens = re.findall(r"[a-z0-9]+", texto.lower())
-    tokens = [t for t in tokens if t not in PALABRAS_RUIDO]
-    return " ".join(tokens)
+def team_keys(name: str) -> set:
+    """Formas normalizadas del nombre, incluidas las de sus alias conocidos."""
+    clave = normalizar_nombre(name)
+    return _GRUPOS_ALIAS.get(clave, {clave}) - {""} if clave else set()
 
 
-def name_similarity(a: str, b: str) -> float:
-    na, nb = normalize_name(a), normalize_name(b)
-    if not na or not nb:
-        return 0.0
+def _similitud_claves(na: str, nb: str) -> float:
     if na == nb:
         return 1.0
     # "bayern" ~ "bayern munchen", pero "milan" NO ~ "inter milan"
     corto, largo = sorted((na, nb), key=len)
     if largo.startswith(corto + " "):
         return 0.95
-    return difflib.SequenceMatcher(None, na, nb).ratio()
+    parecido = difflib.SequenceMatcher(None, na, nb).ratio()
+    # "manchester united" vs "manchester city": cada uno tiene una palabra que el otro
+    # no, asi que son equipos distintos aunque se parezcan
+    ta, tb = set(na.split()), set(nb.split())
+    if ta - tb and tb - ta:
+        return min(parecido, 0.7)
+    return parecido
+
+
+def name_similarity(a: str, b: str) -> float:
+    claves_a, claves_b = team_keys(a), team_keys(b)
+    if not claves_a or not claves_b:
+        return 0.0
+    return max(_similitud_claves(x, y) for x in claves_a for y in claves_b)
 
 
 def find_team(name: str, candidates, umbral=0.8):

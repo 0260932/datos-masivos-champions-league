@@ -284,10 +284,14 @@ def _tokens_yes() -> dict[int, str]:
     return tokens
 
 
-def _pedir_historial(sesion: requests.Session, token: str, intentos: int = 3) -> list | None:
+def _pedir_historial(
+    sesion: requests.Session, token: str, intentos: int = 3, params: dict | None = None
+) -> list | None:
+    """params: rango/fidelidad del historial; por default todo el historial diario (HISTORY_PARAMS).
+    El tracker en vivo (src/live/tracker.py) lo usa con startTs y fidelidad de 1 minuto."""
     for intento in range(1, intentos + 1):
         try:
-            r = sesion.get(CLOB_HISTORY_URL, params={"market": token, **HISTORY_PARAMS}, timeout=30)
+            r = sesion.get(CLOB_HISTORY_URL, params={"market": token, **(params or HISTORY_PARAMS)}, timeout=30)
             if r.status_code == 200:
                 return r.json().get("history", [])
             logger.warning("HTTP %s para token %s... (intento %d)", r.status_code, token[:12], intento)

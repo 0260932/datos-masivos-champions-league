@@ -1,0 +1,12 @@
+{
+  "temporada_entrenamiento": 2023,
+  "temporada_prueba": 2026,
+  "partidos_entrenamiento": 125,
+  "partidos_prueba": 45,
+  "exactitud": 0.4,
+  "exactitud_linea_base": 0.5777777777777777,
+  "linea_base": "siempre 'H'",
+  "exactitud_con_historial": 0.5,
+  "partidos_con_historial": 6,
+  "partidos_modelo_final": 170
+}

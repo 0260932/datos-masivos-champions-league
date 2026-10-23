@@ -21,6 +21,7 @@ import pandas as pd
 import streamlit as st
 
 from src.live.modelo import StrengthModel
+from src.models.xgboost_resultado import PrediccionResultado
 from src.live.tracker import (
     COMPETICIONES,
     DemoTracker,
@@ -124,6 +125,11 @@ header[data-testid="stHeader"]{background:transparent}
 .row em{font-style:normal;color:var(--muted);font-weight:500;margin-left:4px}
 .bar .rg{position:absolute;top:-3px;height:14px;border-radius:4px;background:rgba(234,240,255,.16);
  border:1px solid rgba(234,240,255,.35)}
+.xgb{display:flex;flex-wrap:wrap;gap:4px 14px;align-items:baseline;background:var(--raised);
+ border:1px dashed var(--line);border-radius:12px;padding:8px 14px;margin:0 0 12px;font-size:.86rem;color:var(--muted)}
+.xgb-t{font-size:.7rem;text-transform:uppercase;letter-spacing:.08em;color:var(--text);font-weight:700}
+.xgb-v b{color:var(--text);font-variant-numeric:tabular-nums}
+.xgb-n{flex-basis:100%;font-size:.78rem}
 .why{margin-top:10px;padding-top:10px;border-top:1px solid var(--line);font-size:.82rem;line-height:1.45;color:var(--muted)}
 .why b{display:block;color:var(--text);font-size:.72rem;text-transform:uppercase;letter-spacing:.08em;margin-bottom:3px}
 .metodo{color:var(--muted);font-size:.92rem;line-height:1.55;max-width:75ch}
@@ -170,6 +176,11 @@ header[data-testid="stHeader"]{background:transparent}
 @st.cache_resource
 def modelo():
     return StrengthModel()
+
+
+@st.cache_resource
+def xgboost():
+    return PrediccionResultado()
 
 
 @st.cache_resource
@@ -299,6 +310,8 @@ def chip_estado(partido):
         return f"<span class='chip pre'>Previa · {fecha_mx(partido['utc_date'])}</span>"
     if partido["status"] == "PAUSED":
         return "<span class='chip live'><span class='dot live'></span>Medio tiempo</span>"
+    if partido["status"] == "SIN_DATOS":
+        return "<span class='chip end'>Empezó · sin marcador en vivo</span>"
     if partido["status"] == "FINISHED":
         return "<span class='chip end'>Final</span>"
     return f"<span class='chip live'><span class='dot live'></span>En vivo · {partido['minute']}'</span>"
@@ -315,7 +328,7 @@ def tarjeta(partido, filas, lambdas, fuente, precios):
     for f in filas:
         lado = f["lado"]
         nombre = "Empate" if lado == "draw" else nombre_corto(partido, lado)
-        clase_sig = "SIN" if f["senal"] == "SIN MERCADO" else f["senal"]
+        clase_sig = "SIN" if f["senal"].startswith("SIN") else f["senal"]
         if f["edge"] is None:
             edge = "<div class='edge'>–</div>"
         else:
@@ -348,17 +361,37 @@ def tarjeta(partido, filas, lambdas, fuente, precios):
         st.markdown(
             "<div class='mc'>"
             f"<div class='mc-top'>{chip_estado(partido)}<span class='src'>{origen} · goles esperados "
-            f"{lambdas[0]:.2f}–{lambdas[1]:.2f}</span></div>"
+            f"{lambdas[0]:.2f}–{lambdas[1]:.2f} · marcador: {esc(partido.get('fuente_marcador', '–'))}</span></div>"
             "<div class='sb'>"
             f"<div class='team'>{escudo(partido, 'home')}<div class='tname'>{esc(nombre_corto(partido, 'home'))}</div></div>"
             f"{centro}"
             f"<div class='team'>{escudo(partido, 'away')}<div class='tname'>{esc(nombre_corto(partido, 'away'))}</div></div>"
             "</div>"
+            f"{tira_xgb(partido, filas)}"
             f"<div class='outs'>{''.join(tiles)}</div>"
             "</div>",
             unsafe_allow_html=True,
         )
         grafica_polymarket(partido, filas, precios)
+
+
+def tira_xgb(partido, filas):
+    """Segunda opinion: XGBoost del proyecto antes del partido, con su exactitud validada."""
+    if filas[0]["p_xgb"] is None:
+        return ""
+    m = xgboost().metricas
+    nombres = {"home": nombre_corto(partido, "home"), "draw": "Empate", "away": nombre_corto(partido, "away")}
+    valores = " · ".join(f"{esc(nombres[f['lado']])} <b>{f['p_xgb']:.0%}</b>" for f in filas)
+    nota = ""
+    if m:
+        nota = (
+            f"Exactitud validada {m['exactitud']:.0%} (temporada {m['temporada_prueba']}) contra "
+            f"{m['exactitud_linea_base']:.0%} de «siempre gana el local». Solo referencia: no cambia la señal."
+        )
+    return (
+        "<div class='xgb'><span class='xgb-t'>Segunda opinión · XGBoost del proyecto (previa)</span>"
+        f"<span class='xgb-v'>{valores}</span><span class='xgb-n'>{nota}</span></div>"
+    )
 
 
 def serie_mercado(partido, precios, lado):
@@ -546,7 +579,18 @@ def metodo():
             "<li><b>Cuánto.</b> Ganancia esperada por $1 = probabilidad del modelo ÷ precio − 1. La apuesta "
             "sugerida es ¼ de Kelly con el escenario bajo, con tope de 5% de la banca, porque el modelo "
             "no ve tarjetas rojas, lesiones ni penales.</li>"
-            "</ol>Fuentes: marcador y escudos de football-data.org; precios e historial de Polymarket.</div>",
+            "<li><b>Segunda opinión.</b> Arriba de las tarjetas aparece el XGBoost del proyecto "
+            "(src/models/xgboost_resultado.py, el mismo del notebook 02), que predice el resultado con "
+            "las estadísticas de temporada de cada equipo. Se muestra con su exactitud validada y no "
+            "cambia la señal: en la validación no superó a «siempre gana el local».</li>"
+            "<li><b>Marcador.</b> El calendario, los nombres y los escudos vienen de football-data.org; el "
+            "marcador y el minuto en vivo, del scoreboard público de ESPN, porque el plan gratuito de "
+            "football-data.org no actualiza los partidos en juego a tiempo. Si ninguna fuente trae el "
+            "marcador, el partido aparece sin señal.</li>"
+            "</ol>Código del proyecto que usa: conexión a football-data.org (src/ingestion), estadísticas "
+            "por equipo (src/processing/champions_league.py), normalización de nombres, alias e historial "
+            "de precios de Polymarket (src/processing/polymarket.py) y el XGBoost (src/models). "
+            "Fuentes: marcador y escudos de football-data.org; precios e historial de Polymarket.</div>",
             unsafe_allow_html=True,
         )
 
@@ -603,7 +647,7 @@ def panel():
     calculados = []
     for partido, precios in lista:
         lambdas, fuente = match_lambdas(modelo(), partido, precios)
-        filas = evaluate(partido, lambdas, precios)
+        filas = evaluate(partido, lambdas, precios, xgboost().predict(partido["home"], partido["away"]))
         registrar(partido, filas)
         calculados.append((partido, precios, filas, lambdas, fuente))
     estado["_filas"] = [(p, pr, f) for p, pr, f, _, _ in calculados]
@@ -616,7 +660,7 @@ def panel():
     avisos()
     metodo()
     st.markdown(
-        "<div class='foot'>Datos: football-data.org (marcador) y Polymarket (precios). "
+        "<div class='foot'>Datos: football-data.org (calendario y escudos), ESPN (marcador en vivo) y Polymarket (precios). "
         "Las señales son una referencia del modelo, no una garantía.</div>",
         unsafe_allow_html=True,
     )

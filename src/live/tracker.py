@@ -37,6 +37,8 @@ from pathlib import Path
 import requests
 
 from src.ingestion.extract_api_football_data import API_BASE_URL, get_api_token
+from src.models.xgboost_resultado import PrediccionResultado
+from src.processing.polymarket import _parse_lista, _pedir_historial, normalizar_nombre
 from src.live.modelo import (
     StrengthModel,
     fit_lambdas,
@@ -54,15 +56,21 @@ LIVE_DIR.mkdir(parents=True, exist_ok=True)
 LOGS_DIR.mkdir(parents=True, exist_ok=True)
 
 GAMMA_EVENTS_URL = "https://gamma-api.polymarket.com/events"
-# codigo de football-data.org -> (nombre, tag de Polymarket)
+_SESION = requests.Session()
+# codigo de football-data.org -> (nombre, tag de Polymarket, liga en ESPN)
 COMPETICIONES = {
-    "CL": ("Champions League", "ucl"),
-    "PD": ("La Liga", "la-liga"),
-    "PL": ("Premier League", "premier-league"),
+    "CL": ("Champions League", "ucl", "uefa.champions"),
+    "PD": ("La Liga", "la-liga", "esp.1"),
+    "PL": ("Premier League", "premier-league", "eng.1"),
 }
-CLOB_HISTORY_URL = "https://clob.polymarket.com/prices-history"
+# Marcador en vivo: el plan gratuito de football-data.org no actualiza los
+# partidos en juego a tiempo (se queda en TIMED), asi que el marcador y el
+# minuto se toman del scoreboard publico de ESPN (sin llave).
+ESPN_SCOREBOARD_URL = "https://site.api.espn.com/apis/site/v2/sports/soccer/{liga}/scoreboard"
+VENTANA_EN_JUEGO = timedelta(hours=2, minutes=30)  # despues del inicio, un partido puede seguir en juego
 
 ESTADOS_EN_JUEGO = {"IN_PLAY", "PAUSED", "LIVE"}
+SIN_DATOS = "SIN_DATOS"  # ya empezo pero ninguna fuente trae el marcador
 ESTADOS_PROGRAMADOS = {"TIMED", "SCHEDULED"}
 REFRESCO_EVENTOS_SEG = 600  # cada cuanto se recarga la lista de eventos de Polymarket
 
@@ -94,8 +102,73 @@ def estimate_minute(utc_date: datetime, status: str, ahora: datetime) -> int:
     return min(95, int(transcurrido - 17))
 
 
+def fetch_espn_scores(competicion: str, fechas):
+    """Partidos del scoreboard de ESPN: hora, equipos, estado ('pre'/'in'/'post'), minuto y goles."""
+    liga = COMPETICIONES[competicion][2]
+    eventos = []
+    for fecha in fechas:
+        r = requests.get(
+            ESPN_SCOREBOARD_URL.format(liga=liga), params={"dates": fecha.strftime("%Y%m%d")}, timeout=15
+        )
+        r.raise_for_status()
+        for e in r.json().get("events", []):
+            comp = e["competitions"][0]
+            equipos = {c["homeAway"]: c for c in comp["competitors"]}
+            estado = e["status"]["type"]
+            eventos.append({
+                "utc_date": datetime.fromisoformat(e["date"].replace("Z", "+00:00")),
+                "home_names": [equipos["home"]["team"].get(k) for k in ("displayName", "shortDisplayName", "name")],
+                "away_names": [equipos["away"]["team"].get(k) for k in ("displayName", "shortDisplayName", "name")],
+                "state": estado.get("state"),
+                "medio_tiempo": estado.get("name") == "STATUS_HALFTIME",
+                "minute": _parse_minute(str(e["status"].get("displayClock", "")).replace("'", "")),
+                "home_goals": int(equipos["home"].get("score") or 0),
+                "away_goals": int(equipos["away"].get("score") or 0),
+            })
+    return eventos
+
+
+def _parecido_equipo(nombre, candidatos):
+    """Como name_similarity, pero acepta que un nombre este contenido en el otro
+    ("Alaves" en "Deportivo Alaves"); es seguro porque antes se filtra por hora de inicio."""
+    mejor = 0.0
+    claves = set(normalizar_nombre(nombre).split())
+    for c in filter(None, candidatos):
+        mejor = max(mejor, name_similarity(nombre, c))
+        otras = set(normalizar_nombre(c).split())
+        if claves and otras and (claves <= otras or otras <= claves):
+            mejor = max(mejor, 0.85)
+    return mejor
+
+
+def apply_espn(partidos, eventos):
+    """Actualiza estado, minuto y marcador con ESPN (mismo inicio +-20 min y mismos equipos)."""
+    for p in partidos:
+        candidatos = [e for e in eventos if abs((e["utc_date"] - p["utc_date"]).total_seconds()) <= 20 * 60]
+        mejor, mejor_score = None, 0.0
+        for e in candidatos:
+            sh, sa = _parecido_equipo(p["home"], e["home_names"]), _parecido_equipo(p["away"], e["away_names"])
+            if min(sh, sa) >= 0.6 and sh + sa > mejor_score:
+                mejor, mejor_score = e, sh + sa
+        if mejor is None or mejor["state"] == "pre":
+            continue
+        p["home_goals"], p["away_goals"] = mejor["home_goals"], mejor["away_goals"]
+        p["fuente_marcador"] = "ESPN"
+        if mejor["state"] == "post":
+            p["status"], p["minute"] = "FINISHED", 95
+        else:
+            p["status"] = "PAUSED" if mejor["medio_tiempo"] else "IN_PLAY"
+            p["minute"] = 45 if mejor["medio_tiempo"] else (mejor["minute"] or estimate_minute(p["utc_date"], "IN_PLAY", datetime.now(timezone.utc)))
+    return partidos
+
+
 def fetch_live_matches(minutos_previa: int, competicion: str = "CL"):
-    """Partidos de la competicion en juego (y los que empiezan en <= minutos_previa)."""
+    """Partidos de la competicion en juego (y los que empiezan en <= minutos_previa).
+
+    Calendario, nombres y escudos: football-data.org. Marcador y minuto en
+    vivo: ESPN. Un partido que ya empezo y del que ninguna fuente trae
+    marcador queda como SIN_DATOS (no se supone 0-0).
+    """
     ahora = datetime.now(timezone.utc)
     params = {
         "dateFrom": (ahora - timedelta(days=1)).date().isoformat(),
@@ -111,10 +184,13 @@ def fetch_live_matches(minutos_previa: int, competicion: str = "CL"):
     for m in response.json().get("matches", []):
         status = m.get("status")
         utc_date = datetime.fromisoformat(m["utcDate"].replace("Z", "+00:00"))
+        ya_empezo = utc_date <= ahora <= utc_date + VENTANA_EN_JUEGO
         if status in ESTADOS_EN_JUEGO:
             minuto = _parse_minute(m.get("minute"))
             if minuto is None:
                 minuto = estimate_minute(utc_date, status, ahora)
+        elif status in ESTADOS_PROGRAMADOS and ya_empezo:
+            status, minuto = SIN_DATOS, estimate_minute(utc_date, "IN_PLAY", ahora)
         elif status in ESTADOS_PROGRAMADOS and ahora <= utc_date <= ahora + timedelta(minutes=minutos_previa):
             minuto = 0
         else:
@@ -134,7 +210,15 @@ def fetch_live_matches(minutos_previa: int, competicion: str = "CL"):
             "minute": minuto,
             "home_goals": score.get("home") or 0,
             "away_goals": score.get("away") or 0,
+            "fuente_marcador": "football-data.org",
         })
+
+    if any(p["status"] != "TIMED" or p["utc_date"] <= ahora for p in partidos):
+        try:
+            fechas = {(ahora - timedelta(hours=12)).date(), ahora.date()}
+            apply_espn(partidos, fetch_espn_scores(competicion, sorted(fechas)))
+        except (requests.RequestException, KeyError, ValueError):
+            logger.exception("No se pudo leer el marcador en vivo de ESPN")
     return partidos
 
 
@@ -232,8 +316,8 @@ class PolymarketMoneyline:
             else:
                 lado = "away"
             try:
-                token_id = json.loads(m.get("clobTokenIds") or "[]")[0]  # token del "Yes"
-            except (ValueError, IndexError):
+                token_id = (_parse_lista(m.get("clobTokenIds")) or [None])[0]  # token del "Yes"
+            except IndexError:
                 token_id = None
             precios[lado] = {
                 "token_id": token_id,
@@ -247,16 +331,18 @@ class PolymarketMoneyline:
 
 def price_history(token_id, start_ts=None, fidelity=1):
     """Serie [(datetime UTC, precio)] del token en Polymarket (desde start_ts o todo el historial)."""
-    params = {"market": token_id, "fidelity": fidelity}
+    params = {"fidelity": fidelity}
     if start_ts is None:
         params["interval"] = "max"
     else:
         params["startTs"] = int(start_ts)
-    r = requests.get(CLOB_HISTORY_URL, params=params, timeout=20)
-    r.raise_for_status()
+    # misma peticion (con reintentos) que el pipeline de Polymarket del proyecto
+    historia = _pedir_historial(_SESION, token_id, intentos=2, params=params)
+    if historia is None:
+        raise requests.RequestException(f"Sin historial de Polymarket para el token {token_id[:12]}...")
     return [
         (datetime.fromtimestamp(punto["t"], tz=timezone.utc), float(punto["p"]))
-        for punto in r.json().get("history", [])
+        for punto in historia
     ]
 
 
@@ -331,13 +417,16 @@ COLCHON_EJECUCION = 0.02
 TOPE_APUESTA = 0.05
 
 
-def evaluate(partido, lambdas, precios):
+def evaluate(partido, lambdas, precios, xgb=None):
     """Una fila por resultado (local / empate / visita) con la senal y su justificacion.
 
     La ventaja minima la pone el modelo: es lo que separa su probabilidad
     central de su escenario mas bajo (ritmo de goles +-20%), mas un
     colchon de ejecucion. BUENO = incluso el escenario bajo del modelo
     queda arriba del precio de compra por al menos el colchon.
+
+    xgb: prediccion del XGBoost del proyecto antes del partido. Se reporta
+    como segunda opinion y no cambia la senal (ver xgboost_metricas.json).
     """
     minuto, gl, gv = partido["minute"], partido["home_goals"], partido["away_goals"]
     probs = live_probabilities(*lambdas, minuto, gl, gv)
@@ -350,6 +439,8 @@ def evaluate(partido, lambdas, precios):
         umbral = (p - p_bajo) + COLCHON_EJECUCION
         if partido.get("status") == "FINISHED":
             senal, edge = "CERRADO", None  # ya no se puede entrar
+        elif partido.get("status") == SIN_DATOS:
+            senal, edge = "SIN MARCADOR", None  # sin marcador no se puede calcular nada en vivo
         elif ask is None or not 0.01 <= ask <= 0.99:
             senal, edge = "SIN MERCADO", None
         else:
@@ -368,6 +459,7 @@ def evaluate(partido, lambdas, precios):
             "p_bajo": p_bajo,
             "p_alto": altos[i],
             "p_previa": previas[i],
+            "p_xgb": None if xgb is None else xgb[lado],
             "ask": ask,
             "edge": edge,
             "umbral": umbral,
@@ -390,6 +482,11 @@ def explain(partido, f):
     equipo = "el empate" if f["lado"] == "draw" else f["equipo"]
     if f["senal"] == "CERRADO":
         return "El partido terminó; ya no se puede entrar."
+    if f["senal"] == "SIN MARCADOR":
+        return (
+            "El partido ya empezó, pero ninguna fuente trae todavía el marcador en vivo. Sin marcador "
+            "no se puede calcular la probabilidad, así que no hay señal."
+        )
     if partido["status"] in ESTADOS_PROGRAMADOS:
         return (
             "Antes del partido el modelo toma el precio de Polymarket como punto de partida, así que no "
@@ -422,12 +519,23 @@ def _fmt_ml(v):
     return "  -  " if v is None else f"{v:+d}"
 
 
-def print_match(partido, filas, lambdas, fuente="estadisticas"):
+def print_match(partido, filas, lambdas, fuente="estadisticas", metricas_xgb=None):
     print(
         f"\n{partido['home']} {partido['home_goals']}-{partido['away_goals']} {partido['away']}"
         f"   min {partido['minute']}'  [{partido['status']}]"
         f"   goles esperados: {lambdas[0]:.2f}-{lambdas[1]:.2f} ({fuente})"
     )
+    if filas and filas[0]["p_xgb"] is not None:
+        validacion = ""
+        if metricas_xgb:
+            validacion = (
+                f"; exactitud validada {metricas_xgb['exactitud']:.0%} vs "
+                f"{metricas_xgb['exactitud_linea_base']:.0%} de {metricas_xgb['linea_base']}"
+            )
+        print(
+            f"  XGBoost del proyecto (antes del partido): L {filas[0]['p_xgb']:.0%} · "
+            f"E {filas[1]['p_xgb']:.0%} · V {filas[2]['p_xgb']:.0%}{validacion}; no cambia la senal"
+        )
     print(
         f"  {'Resultado':<26}{'Modelo':>8}{'Rango':>13}{'Ask':>7}{'Edge':>8}{'Exige':>7}"
         f"{'EV/$1':>8}{'ML merc':>9}{'1/4 Kelly':>11}  Senal"
@@ -490,6 +598,7 @@ class Tracker:
         self.modelo = StrengthModel()
         self.competicion = competicion
         self.polymarket = PolymarketMoneyline(competicion)
+        self.xgb = PrediccionResultado()
         self.sonido = sonido
         self.minutos_previa = minutos_previa
         self.ultima_senal = {}  # (match_id, lado) -> senal, para avisar solo en cambios
@@ -497,11 +606,12 @@ class Tracker:
     def analyze(self, partido, precios):
         """(lambdas, fuente, filas) del partido; no imprime ni guarda nada."""
         lambdas, fuente = match_lambdas(self.modelo, partido, precios)
-        return lambdas, fuente, evaluate(partido, lambdas, precios)
+        xgb = self.xgb.predict(partido["home"], partido["away"])
+        return lambdas, fuente, evaluate(partido, lambdas, precios, xgb)
 
     def process(self, partido, precios):
         lambdas, fuente, filas = self.analyze(partido, precios)
-        print_match(partido, filas, lambdas, fuente)
+        print_match(partido, filas, lambdas, fuente, self.xgb.metricas)
         for f in filas:
             clave = (partido["match_id"], f["lado"])
             if f["senal"] == "BUENO" and self.ultima_senal.get(clave) != "BUENO":
