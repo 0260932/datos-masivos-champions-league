@@ -290,6 +290,15 @@ equipos ("Bayern Munich" vs "FC Bayern München"; 9 nombres unificados).
 Por eso los cortes difieren un poco de los del notebook (que supera la
 base en 2 de 4), aunque el promedio coincide.
 
+### 7. Postura del proyecto: la plataforma muestra señales de apuesta
+Decisión del equipo (18-nov-2026): la plataforma en vivo muestra las señales
+BUENO / ESPERAR / NO y la apuesta sugerida, con su sustento ("Por qué",
+rango del modelo, ventaja exigida y ganancia esperada). El aviso académico de
+`src/processing/polymarket.py` se mantiene y aplica a ese módulo: su
+`prob_referencia` es un modelo ingenuo con historia de finales, distinto del
+modelo en vivo anclado al mercado. El dashboard conserva la nota de que las
+señales son una referencia del modelo, no una garantía.
+
 ## Alternativas consideradas
 - Umbral fijo elegido por el usuario (5 pts): descartado porque no tiene
   sustento; la incertidumbre real cambia con el minuto y el marcador.
