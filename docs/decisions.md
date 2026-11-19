@@ -221,3 +221,87 @@ volumen, [100, 1000]). Las temporadas 2024-25 y 2025-26 ya usan el formato
 de fase de liga de 36 equipos (`stage=LEAGUE_STAGE`, con una ronda adicional
 `KNOCKOUT_PLAYOFFS` para los lugares 9-24), el mismo formato que la API usa
 para la temporada actual 2026-27.
+
+---
+
+## Plataforma en vivo de moneyline (`src/live/`, `src/models/`, `streamlit_app.py`)
+
+## Decisión
+Tracker en vivo (terminal y dashboard web en Streamlit) que, cada 30 s,
+compara la probabilidad 1X2 de un modelo contra el precio de compra del
+mercado moneyline del partido en Polymarket, para Champions League, La
+Liga y Premier League.
+
+## Razón y decisiones de diseño
+### 1. El modelo parte del precio del mercado
+Antes del silbatazo se buscan los goles esperados de cada equipo que
+reproducen el 1X2 de Polymarket (precio medio entre compra y venta; ya
+iniciado el partido, el último precio antes del inicio tomado del
+historial). Durante el partido, los goles restantes se modelan como
+Poisson sobre el tiempo que falta. Así el modelo arranca igual que el
+mercado y solo se separa de él por lo que pasa en la cancha. La primera
+versión usaba solo nuestras estadísticas de Champions y producía
+"ventajas" falsas antes del partido (p. ej. Real Madrid +10 pts en el
+Clásico, Málaga +31 pts sin datos de ese equipo).
+
+### 2. La ventaja mínima la fija el modelo
+Se recalcula la probabilidad con el ritmo de goles de cada equipo ±20%
+(los segundos tiempos tienen más goles y el que pierde arriesga). La
+ventaja exigida es la distancia entre la probabilidad central y la del
+escenario más bajo, más 2 pts de deslizamiento. BUENO exige que incluso el
+escenario bajo quede arriba del precio de compra. La exigencia es grande
+al inicio y se achica al final del partido.
+
+### 3. Cuánto apostar
+Ganancia esperada por $1 = probabilidad / precio − 1. Apuesta sugerida:
+¼ de Kelly calculado con el escenario bajo, con tope de 5% de la banca,
+porque el modelo no ve tarjetas rojas, lesiones ni penales.
+
+### 4. Marcador en vivo desde ESPN
+El plan gratuito de football-data.org no actualiza los partidos en juego
+a tiempo: el 23-oct-2026, Alavés–Málaga seguía en `TIMED` y sin marcador
+minutos después del inicio (última actualización 00:20 UTC). El
+calendario, los nombres y los escudos siguen viniendo de football-data;
+el marcador y el minuto, del scoreboard público de ESPN (sin llave). Si
+ninguna fuente trae el marcador, el partido queda como `SIN_DATOS` y sin
+señal; nunca se supone 0-0.
+
+### 5. Unificación con el código del proyecto
+- Nombres de equipo: `normalizar_nombre` y `ALIAS` de
+  `src/processing/polymarket.py`, más una regla para no confundir equipos
+  que comparten palabra (Manchester United vs Manchester City).
+- Historial de precios: `_pedir_historial` de `src/processing/polymarket.py`
+  (se le agregó un parámetro opcional `params` para pedir rango y
+  fidelidad de 1 minuto; su uso en el pipeline no cambia).
+- Estadísticas por equipo de `src/processing/champions_league.py` (respaldo
+  cuando un partido no tiene mercado).
+- XGBoost del notebook 02 llevado a `src/models/xgboost_resultado.py` con
+  las mismas variables, hiperparámetros y diseño de validación.
+
+### 6. XGBoost como segunda opinión, no como señal
+Misma validación hacia adelante que el notebook 02 (5 temporadas
+completas, 4 cortes): exactitud promedio 49.0% contra 47.9% de predecir
+siempre la clase más común; supera la línea base en 3 de 4 cortes, por 1 a
+2.4 pts. Como la ventaja es mínima, se muestra junto a cada partido con su
+exactitud y no interviene en la señal. Antes de entrenar se unifican los
+nombres entre temporadas con el normalizador y los alias del pipeline de
+Polymarket: el histórico manual y la API escriben distinto a varios
+equipos ("Bayern Munich" vs "FC Bayern München"; 9 nombres unificados).
+Por eso los cortes difieren un poco de los del notebook (que supera la
+base en 2 de 4), aunque el promedio coincide.
+
+## Alternativas consideradas
+- Umbral fijo elegido por el usuario (5 pts): descartado porque no tiene
+  sustento; la incertidumbre real cambia con el minuto y el marcador.
+- Usar el XGBoost para decidir la señal: descartado por su validación.
+- Poisson independiente con nuestras estadísticas sin anclar al mercado:
+  descartado por las ventajas falsas antes del partido.
+
+## Consecuencias
+- Las señales solo aparecen en vivo, cuando el mercado tarda en reaccionar
+  a un gol o al reloj; antes del partido el modelo coincide con el precio.
+- El modelo no considera tarjetas rojas, alineaciones ni cambios.
+- Cuando el mercado prevé pocos empates, el ajuste da muchos goles
+  esperados (Clásico: 3.5–2.4) y el modelo reacciona menos a cada gol.
+- ESPN es una fuente pública no oficial: si cambia su formato, el
+  partido queda sin marcador y sin señal (no con datos falsos).

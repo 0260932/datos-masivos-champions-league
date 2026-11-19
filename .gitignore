@@ -21,3 +21,6 @@ data/processed/
 anaconda_projects/
 data/interim/
 logs/*.log
+
+# Secretos de Streamlit
+.streamlit/secrets.toml

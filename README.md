@@ -58,6 +58,42 @@ Si usas un entorno virtual, registra el kernel antes de abrir el notebook:
 2. python -m ipykernel install --user --name=datos-masivos-venv --display-name "Python (datos-masivos venv)"
 3. Selecciónalo dentro de Jupyter.
 
+## Tracker en vivo de moneyline
+
+`src/live/tracker.py` sigue los partidos de Champions en juego y cada 30 s indica, para local / empate / visita, si es buen momento para entrar al moneyline:
+
+1. Calendario, nombres y escudos desde football-data.org (usa el mismo `FOOTBALL_DATA_API_TOKEN`); marcador y minuto en vivo desde el scoreboard público de ESPN, porque el plan gratuito de football-data no actualiza los partidos en juego a tiempo.
+2. Probabilidad 1X2 con `src/live/modelo.py`: Poisson sobre el tiempo restante. Los goles esperados se anclan al precio de Polymarket de justo antes del partido (antes del inicio, al precio actual), así que el modelo arranca igual que el mercado y solo se separa por los goles y el tiempo. Si no hay mercado, usa las estadísticas de `data/processed/` (tabla histórica como prior y ajuste por localía).
+3. Precio de compra (best ask) del mercado moneyline del partido en Polymarket (API pública).
+4. Señal: la ventaja mínima la calcula el modelo, no el usuario. Se repite el cálculo con el ritmo de goles de cada equipo ±20% (los segundos tiempos tienen más goles, el que pierde arriesga) y se exige que incluso el escenario bajo quede arriba del precio de compra, más 2 pts por deslizamiento. `BUENO` si se cumple; `ESPERAR` si el modelo está arriba del precio pero no por suficiente; `NO` si el mercado cobra más de lo que da el modelo. Cada señal trae su explicación ("Por qué"), la ganancia esperada por $1 y una apuesta sugerida (¼ de Kelly con el escenario bajo, tope 5% de la banca). Avisa (con beep) solo cuando un resultado pasa a `BUENO`.
+
+```
+python -m src.live.tracker                 # loop cada 30 s, Ctrl+C para detener
+python -m src.live.tracker --intervalo 60 --competicion PD
+python -m src.live.tracker --una-vez       # una sola pasada
+python -m src.live.tracker --demo          # partido simulado, sin APIs
+```
+
+Junto a cada partido se muestra, como segunda opinión, el XGBoost del proyecto (`src/models/xgboost_resultado.py`, el del notebook 02) con su exactitud validada; no cambia la señal porque en la validación hacia adelante (5 temporadas, 4 cortes) quedó prácticamente igual que predecir siempre la clase más común (49% contra 48%). Para reentrenarlo: `python -m src.models.xgboost_resultado`. Las decisiones de diseño están en `docs/decisions.md`.
+
+Requiere haber corrido antes `python -m src.processing.champions_league`. Cada evaluación se guarda en `data/interim/live/senales_<fecha>.csv` y los avisos en `logs/live_tracker.log`. El modelo es simple (no considera tarjetas rojas, alineaciones ni cambios); úsalo como referencia contra el mercado, no como garantía.
+
+### Dashboard web (Streamlit)
+
+`streamlit_app.py` muestra lo mismo en una página que se actualiza sola: tarjeta por partido con marcador, señal por resultado, gráfica de la ventaja en el tiempo y avisos. Tiene modo demo en la barra lateral.
+
+```
+streamlit run streamlit_app.py
+```
+
+También funciona con La Liga y la Premier League: en el dashboard elígela en la barra lateral, y en la terminal usa `--competicion PD` (La Liga) o `--competicion PL` (Premier). Como el modelo se ancla al precio de Polymarket, funciona igual en cualquier liga que tenga mercado.
+
+Para abrirlo desde internet (gratis) con Streamlit Community Cloud:
+1. Sube el repo a GitHub (tu fork). `data/live/modelo/` sí se versiona: es el snapshot de estadísticas que usa el modelo en la nube. Actualízalo con `python -m src.live.modelo` después de reprocesar datos.
+2. En share.streamlit.io, entra con tu cuenta de GitHub, "Create app", elige el repo, la rama y `streamlit_app.py`.
+3. En "Advanced settings" > Secrets pon: `FOOTBALL_DATA_API_TOKEN = "tu_token"`.
+4. Deploy. Te da un link `https://<nombre>.streamlit.app` que abre en cualquier navegador o celular.
+
 ## Resultados principales
 Con los primeros 8 partidos finalizados de la fase de liga 2026, el equipo local promedió 2.25 goles por partido contra 1.62 del visitante (ver notebooks/01_extraccion_y_diagnostico.ipynb, sección "Primera evidencia", y la gráfica en docs/goles_local_vs_visitante.png).
 
@@ -71,6 +107,10 @@ Con los primeros 8 partidos finalizados de la fase de liga 2026, el equipo local
 - notebooks/02_modelo_prediccion_xgboost.ipynb
 - src/ingestion/: scripts de descarga (uno por fuente)
 - src/processing/: pipeline de limpieza y transformación
+- src/live/: tracker en vivo de moneyline (modelo + loop)
+- src/models/: XGBoost de resultado (segunda opinión del tracker)
+- streamlit_app.py: dashboard web del tracker
+- data/live/modelo/: snapshot de estadísticas para el modelo en la nube
 - src/validation/: validaciones de calidad de datos
 - tests/: pruebas automáticas
 - .env.example
