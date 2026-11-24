@@ -314,3 +314,53 @@ señales son una referencia del modelo, no una garantía.
   esperados (Clásico: 3.5–2.4) y el modelo reacciona menos a cada gol.
 - ESPN es una fuente pública no oficial: si cambia su formato, el
   partido queda sin marcador y sin señal (no con datos falsos).
+---
+
+## Plataforma v2: más ligas, xG en vivo, GARCH, avisos clicables y prueba histórica
+
+## Decisión
+Segunda versión de la plataforma en vivo (`src/live/`, `src/models/`, `streamlit_app.py`), pedida por el equipo para "predecir en vez de reaccionar":
+- **10 ligas** (Champions, Premier, La Liga, Serie A, Bundesliga, Ligue 1, Eredivisie, Primeira Liga, Championship, Brasileirão): todas en el plan gratuito de football-data.org, en ESPN y con mercado moneyline en Polymarket (tags `ucl`, `premier-league`, `la-liga`, `sea`, `bundesliga`, `ligue-1`, `ere`, `primeira-liga`, `efl-championship`, `brazil-serie-a`). Vista "Todas las ligas" por defecto.
+- **xG en vivo** (`src/live/xg_vivo.py`) desde el comentario jugada por jugada de ESPN.
+- **GARCH(1,1)** del precio de Polymarket (`src/models/garch_mercado.py`, librería `arch`).
+- **Avisos clicables** (ancla `#partido-<id>`) y link para compartir cada partido (`?liga=PL&partido=ID`).
+- **XGBoost fuera de las tarjetas**: se documenta en "Cómo decide la plataforma" con su tabla de validación.
+- **Prueba histórica** (`src/models/backtest_xg.py`, `notebooks/03_backtest_xg_mercado.ipynb`).
+
+## Razón y decisiones de diseño
+### 1. Calendario y marcador por separado
+Con 10 ligas, pedir el calendario a football-data.org en cada vuelta rebasaría el límite de 10 solicitudes/min. El calendario se pide cada 10 min por liga; el marcador, minuto, tiros y rojas salen de ESPN en cada vuelta.
+
+### 2. xG aproximado por zona de tiro
+ESPN no publica xG, pero su comentario describe cada tiro. Valores por zona (pie / cabeza), del orden de los modelos públicos de xG: penal 0.76; muy cerca 0.45 / 0.30; área chica 0.30 / 0.20; centro del área 0.12 / 0.08; costados del área 0.06 / 0.05; ángulo difícil 0.04 / 0.03; fuera del área 0.03 / 0.02; sin ubicación 0.06. Para el ritmo futuro se usa **xG sin penales**: un penal no anticipa ocasiones y, si entró, ya está en el marcador. Validado contra un partido real (Hull 2-0 Brighton: 11 y 15 tiros, igual que las estadísticas de ESPN).
+
+### 3. El xG se muestra pero no entra en la señal
+Diseño probado: ritmo = (ritmo previo × W + npxG) / (W + minuto), con W = 60 min, más ×0.70 / ×1.20 por roja. En la prueba histórica empeoró el pronóstico. Para no descartarlo por un mal peso, W se eligió con los 40 partidos más antiguos y se evaluó en los 40 más recientes (Brier en minutos 15, 30, 45, 60 y 75):
+
+| W (min) | Ajuste | Prueba |
+|---|---|---|
+| sin xG | 0.374 | **0.481** |
+| 60 | 0.386 | 0.514 |
+| 240 | 0.375 | 0.490 |
+| 960 | 0.373 | 0.483 |
+
+Entre más pesa el xG, peor pronostica fuera de muestra. Con esta aproximación (solo zona del tiro), el precio del mercado ya incorpora lo que pasa en la cancha. Decisión del equipo: mostrar el xG como información y calcular la señal sin xG (`USAR_XG_EN_SENAL = False`). El "Por qué" indica cuánto daría el modelo con xG cuando cambia de forma visible.
+
+### 4. GARCH del ruido del mercado
+Rendimientos en logit sobre una malla de 5 min (con malla de 1 min, los muchos minutos sin operaciones colapsaban la varianza a ~0). Los saltos de noticia (más de 1 en logit, como un gol) se excluyen del ajuste: tras un gol el GARCH pronosticaba ±43 pts de ruido. El ruido a 2 min (95%, un lado) reemplaza al colchón fijo cuando es mayor a 2 pts, con tope de 10 pts. Si el último movimiento es un salto (>3σ y ≥2 pts), el mercado cuenta como agitado y no se da BUENO en esa vuelta. En la prueba, GARCH **no** pronosticó la volatilidad mejor que una varianza constante (QLIKE 1025 vs 610, 8,147 pronósticos), así que en la práctica casi siempre manda el mínimo de 2 pts.
+
+### 5. Prueba histórica sin ventajas injustas
+80 partidos cerrados de los últimos 21 días (Champions 18, Premier 18, La Liga 20, Serie A 20, Bundesliga 4; se llegó al tope antes de las demás ligas), 7,730 minutos de juego. En cada minuto solo se usa información anterior; los datos de ESPN entran con 60 s de atraso y la compra se hace al precio del minuto siguiente + 1 pt. Resultados:
+- Brier del resultado final: el mercado fue el mejor en todos los minutos (p. ej. minuto 45: mercado 0.429, modelo sin xG 0.449, con xG 0.483).
+- Adelanto: la correlación entre (modelo − mercado) y el cambio del precio 5 min después fue ~0.02, con y sin xG.
+- Señales BUENO: sin xG, 267 señales, 48% de aciertos, −7¢ por $1; con xG, 420 señales, 41%, −16¢ por $1.
+
+## Alternativas consideradas
+- Mantener el xG con W = 60 en la señal: descartado por la prueba fuera de muestra.
+- Notificaciones push al celular (ntfy): descartado por el equipo; avisos dentro de la página.
+- Malla de 1 min para el GARCH: descartada (varianza colapsada).
+
+## Consecuencias
+- La plataforma sigue mostrando señales (postura del equipo), y la metodología muestra que en la prueba histórica no le ganaron al mercado.
+- Un xG mejor (posición exacta del tiro, tipo de asistencia) podría cambiar la conclusión; ESPN no publica esos datos y no se cuenta con otra fuente gratuita en vivo.
+- La muestra de la prueba es de 80 partidos y 5 ligas; correrla con más días (`--dias 35 --max-partidos 150`) amplía la evidencia.

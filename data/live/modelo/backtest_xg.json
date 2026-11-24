@@ -1,0 +1,95 @@
+{
+  "generado": "2026-11-24T01:14:42.816997+00:00",
+  "ventana_dias": 21,
+  "partidos": 80,
+  "por_liga": {
+    "CL": 18,
+    "PL": 18,
+    "PD": 20,
+    "SA": 20,
+    "BL1": 4,
+    "FL1": 0,
+    "DED": 0,
+    "PPL": 0,
+    "ELC": 0,
+    "BSA": 0
+  },
+  "minutos_evaluados": 7730,
+  "adelanto": {
+    "con_xg": {
+      "5min": {
+        "correlacion": 0.018085473219647624,
+        "acierto_direccion": 0.7169055461586398,
+        "casos_direccion": 11233
+      },
+      "10min": {
+        "correlacion": 0.014518842466969757,
+        "acierto_direccion": 0.7084523609477399,
+        "casos_direccion": 11902
+      }
+    },
+    "sin_xg": {
+      "5min": {
+        "correlacion": 0.019095024178815416,
+        "acierto_direccion": 0.7148624243068097,
+        "casos_direccion": 9413
+      },
+      "10min": {
+        "correlacion": 0.01606460295126043,
+        "acierto_direccion": 0.7093826157595451,
+        "casos_direccion": 9848
+      }
+    }
+  },
+  "brier": {
+    "min_15": {
+      "modelo_xg": 0.5321909374843117,
+      "modelo_sin_xg": 0.5043539741137779,
+      "mercado": 0.5030921453505957,
+      "partidos": 80
+    },
+    "min_30": {
+      "modelo_xg": 0.4979951417353816,
+      "modelo_sin_xg": 0.4673212835726062,
+      "mercado": 0.46501533853826016,
+      "partidos": 80
+    },
+    "min_45": {
+      "modelo_xg": 0.4833198268174961,
+      "modelo_sin_xg": 0.44860125689921493,
+      "mercado": 0.428776024758765,
+      "partidos": 80
+    },
+    "min_60": {
+      "modelo_xg": 0.42573415430402084,
+      "modelo_sin_xg": 0.4093582594633123,
+      "mercado": 0.39092470869636503,
+      "partidos": 80
+    },
+    "min_75": {
+      "modelo_xg": 0.29991297441462483,
+      "modelo_sin_xg": 0.2995950603460596,
+      "mercado": 0.26653753349274106,
+      "partidos": 80
+    }
+  },
+  "senales": {
+    "con_xg": {
+      "senales": 420,
+      "aciertos": 0.40714285714285714,
+      "ganancia_por_dolar": -0.15758577502180296,
+      "ganancia_total": -66.18602550915725
+    },
+    "sin_xg": {
+      "senales": 267,
+      "aciertos": 0.4794007490636704,
+      "ganancia_por_dolar": -0.07083525825072602,
+      "ganancia_total": -18.913013952943846
+    }
+  },
+  "garch": {
+    "qlike_garch": 1025.3526290988652,
+    "qlike_constante": 610.3550102375083,
+    "observaciones": 8147
+  }
+}
