@@ -158,6 +158,17 @@ def test_interruptor_del_xg_en_la_senal():
     assert tracker.USAR_XG_EN_SENAL  # la plataforma predice con xG y momentum
 
 
+def test_factores_explican_la_probabilidad():
+    """Previa + lo que suma cada factor = probabilidad del modelo; la decision viene en una frase."""
+    precios = {"home": {"ask": 0.30}, "draw": {"ask": 0.30}, "away": {"ask": 0.40}}
+    xg = {"home": {"xg": 1.8, "npxg": 1.8, "rojas": 0, "presion": 0.9},
+          "away": {"xg": 0.2, "npxg": 0.2, "rojas": 1, "presion": 0.1}}
+    for f in tracker.evaluate(_partido(55), (1.3, 1.1), precios, xg, usar_xg=True):
+        assert abs(f["p_previa"] + sum(c for _, c in f["factores"]) - f["p_modelo"]) < 1e-9
+        assert [n for n, _ in f["factores"]] == ["Marcador y reloj", "xG", "Rojas", "Momentum"]
+        assert f["veredicto"]
+
+
 def test_sin_marcador_no_da_senal():
     precios = {"home": {"ask": 0.30}, "draw": {"ask": 0.30}, "away": {"ask": 0.40}}
     filas = tracker.evaluate(_partido(30, status=tracker.SIN_DATOS), (1.3, 1.1), precios)

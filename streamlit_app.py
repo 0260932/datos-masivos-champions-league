@@ -164,6 +164,21 @@ a.ev:hover{border-color:var(--muted)}
 .s-BUENO .razones span.clave{color:var(--good)}
 .s-NO .razones span.clave{color:var(--bad)}
 .s-ESPERAR .razones span.clave{color:var(--warn)}
+.verd{font-size:.9rem;font-weight:600;color:var(--text);line-height:1.35;margin:8px 0 2px}
+.s-BUENO .verd{color:var(--good)}
+.s-NO .verd{color:var(--muted)}
+.cas,.cm{margin:8px 0;padding-top:8px;border-top:1px solid var(--line)}
+.cas-t{font-size:.68rem;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);font-weight:700;margin-bottom:5px}
+.cas-l{display:flex;flex-wrap:wrap;align-items:center;gap:4px 5px;font-size:.78rem;font-variant-numeric:tabular-nums}
+.cas-l span{border-radius:999px;padding:2px 8px;background:var(--surface);border:1px solid var(--line);color:var(--text);white-space:nowrap}
+.cas-l span.sube{color:var(--good);border-color:rgba(47,209,122,.45)}
+.cas-l span.baja{color:var(--bad);border-color:rgba(255,93,93,.45)}
+.cas-l span.cas-fin{border-color:var(--text)}
+.cas-l i{font-style:normal;color:var(--muted)}
+.cm-l{font-size:.82rem;color:var(--muted);font-variant-numeric:tabular-nums}
+.cm-l b{color:var(--text)}
+.cm-l .ok{color:var(--good);font-weight:700;margin-left:4px}
+.cm-l .no{color:var(--muted);font-weight:700;margin-left:4px}
 .why details{margin-top:6px}
 .why summary{cursor:pointer;font-size:.74rem;color:var(--muted);list-style:none}
 .why summary::-webkit-details-marker{display:none}
@@ -395,6 +410,36 @@ def tira_vivo(partido, analisis):
     return f"<div class='vivo'>{''.join(partes)}</div>" if partes else ""
 
 
+def cascada(f):
+    """Como llega el modelo a su probabilidad: previa y lo que suma o resta cada factor."""
+    if f["senal"] in ("CERRADO", "SIN MARCADOR"):
+        return ""
+    pasos = [f"<span class='cas-base'>Antes del partido <b>{f['p_previa']:.0%}</b></span>"]
+    for nombre, cambio in f["factores"]:
+        if abs(cambio) < 0.005:
+            continue
+        clase = "sube" if cambio > 0 else "baja"
+        pasos.append(f"<span class='{clase}'>{esc(nombre)} <b>{cambio * 100:+.0f}</b></span>")
+    pasos.append(f"<span class='cas-fin'>= modelo <b>{f['p_modelo']:.0%}</b></span>")
+    return (
+        f"<div class='cas'><div class='cas-t'>Cómo llega el modelo a {f['p_modelo']:.0%}</div>"
+        f"<div class='cas-l'>{'<i>→</i>'.join(pasos)}</div></div>"
+    )
+
+
+def contra_mercado(f):
+    """La comparacion que decide la senal: precio, ventaja y lo que se exige."""
+    if f["edge"] is None:
+        return ""
+    alcanza = f["edge"] >= f["umbral"]
+    return (
+        "<div class='cm'><div class='cas-t'>Contra el mercado</div>"
+        f"<div class='cm-l'>Precio <b>{f['ask']:.0%}</b> · ventaja <b>{f['edge'] * 100:+.1f} pts</b> · "
+        f"se necesitan <b>{f['umbral'] * 100:.1f}</b> "
+        f"<span class='{'ok' if alcanza else 'no'}'>{'✔ alcanza' if alcanza else '✘ no alcanza'}</span></div></div>"
+    )
+
+
 def etiquetas_razones(razones):
     """Etiquetas del "Por que"; la ultima (el veredicto) va resaltada con el color de la senal."""
     return "<div class='razones'>" + "".join(
@@ -489,18 +534,17 @@ def tarjeta(partido, analisis, precios):
             f"<div class='out s-{clase_sig}'>"
             f"<div class='out-h'>{mini_escudo(partido, lado)}<span class='nm'>{esc(nombre)}</span>"
             f"<span class='sig s-{clase_sig}'>{esc(f['senal'])}</span></div>"
+            f"<div class='verd'>{esc(f['veredicto'])}</div>"
             f"{edge}"
             f"<div class='bar'><div class='m' style='width:{ancho:.1f}%;background:{COLORES_LADO[lado]}'></div>"
             f"<div class='rg' style='left:{f['p_bajo'] * 100:.1f}%;width:{(f['p_alto'] - f['p_bajo']) * 100:.1f}%'></div>"
             f"<div class='md' style='left:{f['p_modelo'] * 100:.1f}%'></div></div>"
-            f"<div class='row'><span>Precio de compra</span><b>{fmt_pct(f['ask'])}</b></div>"
-            f"<div class='row'><span>Modelo (rango)</span><b>{f['p_modelo']:.1%} "
-            f"<em>{f['p_bajo']:.0%}–{f['p_alto']:.0%}</em></b></div>"
-            f"<div class='row'><span>Ganancia esperada / $1</span><b>{ev}</b></div>"
+            f"{cascada(f)}"
+            f"{contra_mercado(f)}"
             f"<div class='row'><span>Momio merc. / justo</span><b>{fmt_ml(f['ml_mercado'])} / {fmt_ml(f['ml_justo'])}</b></div>"
+            f"<div class='row'><span>Ganancia esperada / $1</span><b>{ev}</b></div>"
             f"<div class='row'><span>Apuesta (% banca)</span><b>{f['kelly_25']:.1%}</b></div>"
-            f"<div class='why'><b>Por qué</b>{etiquetas_razones(f['razones'])}"
-            f"<details><summary>Ver explicación</summary><p>{esc(f['porque'])}</p></details></div>"
+            f"<div class='why'><details><summary>Ver explicación</summary><p>{esc(f['porque'])}</p></details></div>"
             "</div>"
         )
 
@@ -674,7 +718,7 @@ def registrar(partido, filas):
             estado["avisos"].insert(0, {
                 "hora": f"{ahora:%H:%M}", "minuto": partido["minute"], "lado": f["lado"],
                 "partido": dict(partido), "equipo": f["equipo"], "p_modelo": f["p_modelo"],
-                "ask": f["ask"], "edge": f["edge"], "ml": f["ml_mercado"], "razones": f["razones"],
+                "ask": f["ask"], "edge": f["edge"], "ml": f["ml_mercado"], "razones": f["razones"], "veredicto": f["veredicto"],
             })
             st.toast(f"Buen momento: moneyline de {f['equipo']} · [ver partido](#{ancla(partido)})", icon="✅")
         estado["ultima_senal"][clave] = f["senal"]
@@ -695,7 +739,7 @@ def avisos():
         items.append(
             f"<a class='ev' href='#{ancla(p)}' title='Ir al partido'>"
             f"<span class='t'>{a['minuto']}'</span>{mini_escudo(p, a['lado'])}"
-            f"<div class='tx'><b>{esc(a['equipo'])}</b> · {esc(' · '.join(a['razones']))}. "
+            f"<div class='tx'><b>{esc(a.get('veredicto', a['equipo']))}</b> {esc(' · '.join(a['razones']))}. "
             f"Momio {fmt_ml(a['ml'])}."
             f"<br><span>{a['hora']} · {esc(nombre_corto(p, 'home'))} vs {esc(nombre_corto(p, 'away'))} · "
             "clic para ir al partido</span></div>"

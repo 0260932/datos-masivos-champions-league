@@ -488,6 +488,14 @@ def evaluate(partido, lambdas, precios, xg=None, vol=None, usar_xg=None):
     sin_xg = live_probabilities(*lambdas, minuto, gl, gv)
     bajos, altos = live_probability_range(*vivas, minuto, gl, gv)
     previas = live_probabilities(*lambdas, 0, 0, 0)
+    # Descomposicion de la probabilidad, factor por factor (para explicar la decision):
+    # previa -> marcador y reloj -> xG -> rojas -> momentum.
+    pasos = [("Marcador y reloj", sin_xg)]
+    if usar_xg and xg:
+        sin_rojas = {lado: dict(xg[lado], rojas=0) for lado in ("home", "away")}
+        solo_xg = live_probabilities(*ritmo_en_vivo(*lambdas, minuto, sin_rojas, peso_momentum=0), minuto, gl, gv)
+        xg_rojas = live_probabilities(*ritmo_en_vivo(*lambdas, minuto, xg, peso_momentum=0), minuto, gl, gv)
+        pasos += [("xG", solo_xg), ("Rojas", xg_rojas), ("Momentum", probs)]
     nombres = {"home": partido["home"], "draw": "Empate", "away": partido["away"]}
     filas = []
     for i, lado in enumerate(("home", "draw", "away")):
@@ -535,11 +543,42 @@ def evaluate(partido, lambdas, precios, xg=None, vol=None, usar_xg=None):
             "ml_mercado": to_american(ask),
             # Kelly con el escenario bajo: si el modelo esta de mas optimista, no se sobreapuesta
             "kelly_25": min(TOPE_APUESTA, 0.25 * kelly_fraction(p_bajo, ask)) if senal == "BUENO" else 0.0,
+            # [(factor, cambio en probabilidad)] desde la previa hasta p_modelo
+            "factores": _factores(previas[i], [(nombre, serie[i]) for nombre, serie in pasos]),
         })
     for f in filas:
         f["porque"] = explain(partido, f, xg)
         f["razones"] = razones_cortas(partido, f, xg)
+        f["veredicto"] = veredicto(f)
     return filas
+
+
+def _factores(previa, pasos):
+    salida, anterior = [], previa
+    for nombre, valor in pasos:
+        salida.append((nombre, valor - anterior))
+        anterior = valor
+    return salida
+
+
+def veredicto(f):
+    """La decision en una frase, en lenguaje llano."""
+    nombre = "el empate" if f["lado"] == "draw" else f["equipo"]
+    a_nombre = "al empate" if f["lado"] == "draw" else f"a {f['equipo']}"
+    if f["senal"] == "CERRADO":
+        return "Partido terminado: ya no se puede apostar."
+    if f["senal"] == "SIN MARCADOR":
+        return "Sin marcador en vivo: no hay recomendación."
+    if f["senal"] == "SIN MERCADO":
+        return f"Sin precio en Polymarket para {nombre}: no hay contra qué comparar."
+    modelo, precio = f"{f['p_modelo']:.0%}", f"{f['ask']:.0%}"
+    if f["senal"] == "BUENO":
+        return f"Apostar {a_nombre}: el modelo le da {modelo} y el mercado lo paga como {precio}."
+    if f["senal"] == "ESPERAR":
+        if f["agitado"] and f["edge"] >= f["umbral"]:
+            return f"Esperar: hay ventaja en {nombre}, pero el precio acaba de brincar; confirmar en la siguiente vuelta."
+        return f"Todavía no: {nombre} vale un poco más que su precio ({modelo} vs {precio}), pero no lo suficiente."
+    return f"No apostar {a_nombre}: el mercado lo cobra a {precio} y el modelo cree que vale {modelo}."
 
 
 def razones_cortas(partido, f, xg=None):
