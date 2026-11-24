@@ -1,95 +1,235 @@
 {
-  "generado": "2026-11-24T01:14:42.816997+00:00",
+  "generado": "2026-11-24T19:26:33.761513+00:00",
   "ventana_dias": 21,
   "partidos": 80,
   "por_liga": {
-    "CL": 18,
+    "CL": 16,
     "PL": 18,
     "PD": 20,
     "SA": 20,
-    "BL1": 4,
+    "BL1": 6,
     "FL1": 0,
     "DED": 0,
     "PPL": 0,
     "ELC": 0,
     "BSA": 0
   },
-  "minutos_evaluados": 7730,
+  "minutos_evaluados": 7731,
+  "calibracion": {
+    "partidos_ajuste": 40,
+    "partidos_prueba": 40,
+    "corte": "2026-11-08T17:00:00+00:00",
+    "grilla": [
+      {
+        "peso_previo": 30,
+        "peso_momentum": 0.0,
+        "brier_ajuste": 0.41932822304013734
+      },
+      {
+        "peso_previo": 30,
+        "peso_momentum": 0.5,
+        "brier_ajuste": 0.417025167013406
+      },
+      {
+        "peso_previo": 30,
+        "peso_momentum": 1.0,
+        "brier_ajuste": 0.42117237076050595
+      },
+      {
+        "peso_previo": 30,
+        "peso_momentum": 2.0,
+        "brier_ajuste": 0.4471986377448885
+      },
+      {
+        "peso_previo": 60,
+        "peso_momentum": 0.0,
+        "brier_ajuste": 0.4099736837925703
+      },
+      {
+        "peso_previo": 60,
+        "peso_momentum": 0.5,
+        "brier_ajuste": 0.4080300706985245
+      },
+      {
+        "peso_previo": 60,
+        "peso_momentum": 1.0,
+        "brier_ajuste": 0.41353747430600396
+      },
+      {
+        "peso_previo": 60,
+        "peso_momentum": 2.0,
+        "brier_ajuste": 0.44302096707122773
+      },
+      {
+        "peso_previo": 120,
+        "peso_momentum": 0.0,
+        "brier_ajuste": 0.40455781185835527
+      },
+      {
+        "peso_previo": 120,
+        "peso_momentum": 0.5,
+        "brier_ajuste": 0.40242062471020296
+      },
+      {
+        "peso_previo": 120,
+        "peso_momentum": 1.0,
+        "brier_ajuste": 0.4085165481639965
+      },
+      {
+        "peso_previo": 120,
+        "peso_momentum": 2.0,
+        "brier_ajuste": 0.4400241638289126
+      },
+      {
+        "peso_previo": 240,
+        "peso_momentum": 0.0,
+        "brier_ajuste": 0.40205946479146665
+      },
+      {
+        "peso_previo": 240,
+        "peso_momentum": 0.5,
+        "brier_ajuste": 0.3996064357744471
+      },
+      {
+        "peso_previo": 240,
+        "peso_momentum": 1.0,
+        "brier_ajuste": 0.4058584022746082
+      },
+      {
+        "peso_previo": 240,
+        "peso_momentum": 2.0,
+        "brier_ajuste": 0.4382318025392956
+      },
+      {
+        "peso_previo": 480,
+        "peso_momentum": 0.0,
+        "brier_ajuste": 0.4010683124648099
+      },
+      {
+        "peso_previo": 480,
+        "peso_momentum": 0.5,
+        "brier_ajuste": 0.3983735329498191
+      },
+      {
+        "peso_previo": 480,
+        "peso_momentum": 1.0,
+        "brier_ajuste": 0.40463929364583173
+      },
+      {
+        "peso_previo": 480,
+        "peso_momentum": 2.0,
+        "brier_ajuste": 0.4373221910052425
+      },
+      {
+        "peso_previo": 960,
+        "peso_momentum": 0.0,
+        "brier_ajuste": 0.40069607155431997
+      },
+      {
+        "peso_previo": 960,
+        "peso_momentum": 0.5,
+        "brier_ajuste": 0.3978547503018849
+      },
+      {
+        "peso_previo": 960,
+        "peso_momentum": 1.0,
+        "brier_ajuste": 0.40410682661279435
+      },
+      {
+        "peso_previo": 960,
+        "peso_momentum": 2.0,
+        "brier_ajuste": 0.4368965511718059
+      }
+    ],
+    "elegido": {
+      "peso_previo": 960,
+      "peso_momentum": 0.5
+    },
+    "brier_ajuste": {
+      "con_xg_momentum": 0.3978547503018849,
+      "sin_xg": 0.40256557471783466
+    },
+    "brier_prueba": {
+      "con_xg_momentum": 0.4465559234990907,
+      "sin_xg": 0.44398523697768116
+    },
+    "mejora_en_prueba": -0.0025706865214095154
+  },
   "adelanto": {
     "con_xg": {
       "5min": {
-        "correlacion": 0.018085473219647624,
-        "acierto_direccion": 0.7169055461586398,
-        "casos_direccion": 11233
+        "correlacion": 0.03818761115052255,
+        "acierto_direccion": 0.6852017048270393,
+        "casos_direccion": 10089
       },
       "10min": {
-        "correlacion": 0.014518842466969757,
-        "acierto_direccion": 0.7084523609477399,
-        "casos_direccion": 11902
+        "correlacion": 0.03827412581867525,
+        "acierto_direccion": 0.6747010463378177,
+        "casos_direccion": 10704
       }
     },
     "sin_xg": {
       "5min": {
-        "correlacion": 0.019095024178815416,
-        "acierto_direccion": 0.7148624243068097,
-        "casos_direccion": 9413
+        "correlacion": 0.016166375882251085,
+        "acierto_direccion": 0.7098367697594502,
+        "casos_direccion": 9312
       },
       "10min": {
-        "correlacion": 0.01606460295126043,
-        "acierto_direccion": 0.7093826157595451,
-        "casos_direccion": 9848
+        "correlacion": 0.012961475611938382,
+        "acierto_direccion": 0.7039392695937629,
+        "casos_direccion": 9748
       }
     }
   },
   "brier": {
     "min_15": {
-      "modelo_xg": 0.5321909374843117,
-      "modelo_sin_xg": 0.5043539741137779,
-      "mercado": 0.5030921453505957,
+      "modelo_xg": 0.5224495936690363,
+      "modelo_sin_xg": 0.4994490737542739,
+      "mercado": 0.49659897677571463,
       "partidos": 80
     },
     "min_30": {
-      "modelo_xg": 0.4979951417353816,
-      "modelo_sin_xg": 0.4673212835726062,
-      "mercado": 0.46501533853826016,
+      "modelo_xg": 0.4585721231238284,
+      "modelo_sin_xg": 0.46096523184212,
+      "mercado": 0.45766075335838324,
       "partidos": 80
     },
     "min_45": {
-      "modelo_xg": 0.4833198268174961,
-      "modelo_sin_xg": 0.44860125689921493,
-      "mercado": 0.428776024758765,
+      "modelo_xg": 0.44393030238960585,
+      "modelo_sin_xg": 0.4453568749576694,
+      "mercado": 0.42331512352668155,
       "partidos": 80
     },
     "min_60": {
-      "modelo_xg": 0.42573415430402084,
-      "modelo_sin_xg": 0.4093582594633123,
-      "mercado": 0.39092470869636503,
+      "modelo_xg": 0.3959816744129632,
+      "modelo_sin_xg": 0.40024954773652366,
+      "mercado": 0.38206983948221473,
       "partidos": 80
     },
     "min_75": {
-      "modelo_xg": 0.29991297441462483,
-      "modelo_sin_xg": 0.2995950603460596,
-      "mercado": 0.26653753349274106,
+      "modelo_xg": 0.2882883574106652,
+      "modelo_sin_xg": 0.29898883396871906,
+      "mercado": 0.26531153768667226,
       "partidos": 80
     }
   },
   "senales": {
     "con_xg": {
-      "senales": 420,
-      "aciertos": 0.40714285714285714,
-      "ganancia_por_dolar": -0.15758577502180296,
-      "ganancia_total": -66.18602550915725
+      "senales": 304,
+      "aciertos": 0.5263157894736842,
+      "ganancia_por_dolar": -0.08261450151240506,
+      "ganancia_total": -25.114808459771137
     },
     "sin_xg": {
       "senales": 267,
       "aciertos": 0.4794007490636704,
-      "ganancia_por_dolar": -0.07083525825072602,
-      "ganancia_total": -18.913013952943846
+      "ganancia_por_dolar": -0.07234772320634335,
+      "ganancia_total": -19.316842096093673
     }
   },
   "garch": {
-    "qlike_garch": 1025.3526290988652,
-    "qlike_constante": 610.3550102375083,
+    "qlike_garch": 1019.0512384255707,
+    "qlike_constante": 600.3237550582145,
     "observaciones": 8147
   }
 }

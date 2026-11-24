@@ -20,6 +20,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import altair as alt
+import numpy as np
 import pandas as pd
 import streamlit as st
 
@@ -137,6 +138,14 @@ header[data-testid="stHeader"]{background:transparent}
 .vivo b{color:var(--text)}
 .vivo .t{font-size:.7rem;text-transform:uppercase;letter-spacing:.08em;color:var(--text);font-weight:700}
 .chip.warn{color:var(--warn);background:rgba(245,180,0,.13)}
+.stats{display:grid;gap:8px;margin:0 0 12px}
+.st{display:grid;grid-template-columns:48px 1fr 48px;align-items:center;gap:10px;font-variant-numeric:tabular-nums}
+.st b{color:var(--text);font-weight:700;font-size:.9rem}
+.st b:last-child{text-align:right}
+.st .c{display:flex;flex-direction:column;gap:3px;text-align:center;color:var(--muted);font-size:.76rem}
+.st .duo{display:flex;height:6px;border-radius:99px;overflow:hidden;background:var(--line);gap:2px}
+.st .duo i{display:block;height:100%}
+.mom-t{font-size:.7rem;text-transform:uppercase;letter-spacing:.08em;color:var(--text);font-weight:700;margin:4px 0 -6px}
 a.ev{text-decoration:none;color:inherit}
 a.ev:hover{border-color:var(--muted)}
 .tabla{border-collapse:collapse;margin:.4rem 0 .8rem;font-size:.85rem;font-variant-numeric:tabular-nums}
@@ -144,7 +153,20 @@ a.ev:hover{border-color:var(--muted)}
 .tabla th{color:var(--muted);font-weight:600}
 .tabla td:first-child,.tabla th:first-child{text-align:left}
 .why{margin-top:10px;padding-top:10px;border-top:1px solid var(--line);font-size:.82rem;line-height:1.45;color:var(--muted)}
-.why b{display:block;color:var(--text);font-size:.72rem;text-transform:uppercase;letter-spacing:.08em;margin-bottom:3px}
+.why b{display:block;color:var(--text);font-size:.72rem;text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px}
+.razones{display:flex;flex-wrap:wrap;gap:5px}
+.razones span{background:var(--surface);border:1px solid var(--line);border-radius:999px;padding:2px 9px;
+ font-size:.76rem;color:var(--text);white-space:nowrap;font-variant-numeric:tabular-nums}
+.razones span.clave{border-color:currentColor;font-weight:700}
+.s-BUENO .razones span.clave{color:var(--good)}
+.s-NO .razones span.clave{color:var(--bad)}
+.s-ESPERAR .razones span.clave{color:var(--warn)}
+.why details{margin-top:6px}
+.why summary{cursor:pointer;font-size:.74rem;color:var(--muted);list-style:none}
+.why summary::-webkit-details-marker{display:none}
+.why summary::before{content:"▸ "}
+.why details[open] summary::before{content:"▾ "}
+.why details p{margin:6px 0 0;font-size:.8rem;line-height:1.45}
 .metodo{color:var(--muted);font-size:.92rem;line-height:1.55;max-width:75ch}
 .metodo b{color:var(--text)}
 .metodo ol{padding-left:1.2rem;margin:.4rem 0}
@@ -355,14 +377,11 @@ def tira_vivo(partido, analisis):
     partes = []
     if xg:
         local, visita = esc(nombre_corto(partido, "home")), esc(nombre_corto(partido, "away"))
-        partes.append(
-            f"<span class='t' title='Informativo: no entra en la señal'>xG en vivo (informativo)</span>"
-            f"<span>{local} <b>{xg['home']['xg']:.2f}</b> – "
-            f"<b>{xg['away']['xg']:.2f}</b> {visita}</span>"
-            f"<span>Tiros a puerta <b>{xg['home']['a_puerta']}</b> – <b>{xg['away']['a_puerta']}</b></span>"
-        )
-        if xg["home"]["rojas"] or xg["away"]["rojas"]:
-            partes.append(f"<span>Rojas <b>{xg['home']['rojas']}</b> – <b>{xg['away']['rojas']}</b></span>")
+        total = xg["home"].get("presion", 0) + xg["away"].get("presion", 0)
+        if total >= 0.05:
+            domina = local if xg["home"]["presion"] >= xg["away"]["presion"] else visita
+            parte = max(xg["home"]["presion"], xg["away"]["presion"]) / total
+            partes.append(f"<span class='t'>Momentum</span><span>presiona <b>{domina}</b> ({parte:.0%} de la presión reciente)</span>")
     ruidos = [f for f in filas if f.get("ruido_metodo")]
     if ruidos:
         maximo = max(f["ruido"] for f in ruidos)
@@ -371,6 +390,67 @@ def tira_vivo(partido, analisis):
     if any(f["agitado"] for f in filas):
         partes.append("<span class='chip warn'>Mercado agitado</span>")
     return f"<div class='vivo'>{''.join(partes)}</div>" if partes else ""
+
+
+def etiquetas_razones(razones):
+    """Etiquetas del "Por que"; la ultima (el veredicto) va resaltada con el color de la senal."""
+    return "<div class='razones'>" + "".join(
+        f"<span class='{'clave' if i == len(razones) - 1 else ''}'>{esc(r)}</span>" for i, r in enumerate(razones)
+    ) + "</div>"
+
+
+def panel_estadisticas(partido, xg):
+    """Comparacion local vs visita como en las apps de futbol: xG, posesion, tiros, a puerta, corners."""
+    if not xg:
+        return ""
+    est = xg.get("estadisticas") or {}
+    filas = [("Goles esperados (xG)", xg["home"]["xg"], xg["away"]["xg"], "{:.2f}")]
+    if est.get("home", {}).get("posesion") is not None:
+        filas.append(("Posesión", est["home"]["posesion"], est["away"]["posesion"], "{:.0f}%"))
+    filas += [
+        ("Tiros", xg["home"]["tiros"], xg["away"]["tiros"], "{:.0f}"),
+        ("Tiros a puerta", xg["home"]["a_puerta"], xg["away"]["a_puerta"], "{:.0f}"),
+        ("Córners", xg["home"].get("corners", 0), xg["away"].get("corners", 0), "{:.0f}"),
+    ]
+    if xg["home"]["rojas"] or xg["away"]["rojas"]:
+        filas.append(("Rojas", xg["home"]["rojas"], xg["away"]["rojas"], "{:.0f}"))
+    html_filas = []
+    for nombre, a, b, fmt in filas:
+        total = (a or 0) + (b or 0)
+        pa = 50 if total == 0 else 100 * (a or 0) / total
+        html_filas.append(
+            f"<div class='st'><b>{fmt.format(a or 0)}</b><div class='c'>{nombre}<div class='duo'>"
+            f"<i style='width:{pa:.0f}%;background:{COLORES_LADO['home']}'></i>"
+            f"<i style='width:{100 - pa:.0f}%;background:{COLORES_LADO['away']}'></i></div></div>"
+            f"<b>{fmt.format(b or 0)}</b></div>"
+        )
+    return f"<div class='stats'>{''.join(html_filas)}</div>"
+
+
+def grafica_momentum(partido, xg):
+    """Momentum del partido: presion reciente local (arriba) contra visita (abajo), minuto a minuto."""
+    serie = (xg or {}).get("momentum") or []
+    if len(serie) < 2:
+        return
+    datos = pd.DataFrame(serie, columns=["minuto", "momentum"])
+    datos["lado"] = np.where(datos["momentum"] >= 0, nombre_corto(partido, "home"), nombre_corto(partido, "away"))
+    tope = max(0.15, float(datos["momentum"].abs().max()))
+    colores = alt.Scale(domain=[nombre_corto(partido, "home"), nombre_corto(partido, "away")],
+                        range=[COLORES_LADO["home"], COLORES_LADO["away"]])
+    barras = alt.Chart(datos).mark_bar(width=3).encode(
+        x=alt.X("minuto:Q", title=None, scale=alt.Scale(domain=[0, 95]),
+                axis=alt.Axis(values=[0, 15, 30, 45, 60, 75, 90], labelColor="#8796b8", grid=False, domain=False,
+                              tickColor="#22304f", labelExpr="datum.value == 45 ? 'MT' : datum.value + \"'\"")),
+        y=alt.Y("momentum:Q", title=None, scale=alt.Scale(domain=[-tope, tope]), axis=None),
+        color=alt.Color("lado:N", scale=colores, legend=None),
+        tooltip=[alt.Tooltip("minuto:Q", title="Minuto"), alt.Tooltip("lado:N", title="Presiona"),
+                 alt.Tooltip("momentum:Q", title="Presión", format="+.2f")],
+    )
+    cero = alt.Chart(pd.DataFrame({"y": [0]})).mark_rule(color="#22304f").encode(y="y:Q")
+    medio = alt.Chart(pd.DataFrame({"x": [45]})).mark_rule(color="#8796b8", strokeDash=[2, 3]).encode(x="x:Q")
+    st.markdown("<div class='mom-t'>Momentum</div>", unsafe_allow_html=True)
+    st.altair_chart((barras + cero + medio).properties(height=120, background="transparent")
+                    .configure_view(strokeWidth=0), width="stretch", theme=None)
 
 
 def tarjeta(partido, analisis, precios):
@@ -416,7 +496,8 @@ def tarjeta(partido, analisis, precios):
             f"<div class='row'><span>Ganancia esperada / $1</span><b>{ev}</b></div>"
             f"<div class='row'><span>Momio merc. / justo</span><b>{fmt_ml(f['ml_mercado'])} / {fmt_ml(f['ml_justo'])}</b></div>"
             f"<div class='row'><span>Apuesta (% banca)</span><b>{f['kelly_25']:.1%}</b></div>"
-            f"<div class='why'><b>Por qué</b>{esc(f['porque'])}</div>"
+            f"<div class='why'><b>Por qué</b>{etiquetas_razones(f['razones'])}"
+            f"<details><summary>Ver explicación</summary><p>{esc(f['porque'])}</p></details></div>"
             "</div>"
         )
 
@@ -431,10 +512,12 @@ def tarjeta(partido, analisis, precios):
             f"<div class='team'>{escudo(partido, 'away')}<div class='tname'>{esc(nombre_corto(partido, 'away'))}</div></div>"
             "</div>"
             f"{tira_vivo(partido, analisis)}"
-            f"<div class='outs'>{''.join(tiles)}</div>"
+            f"{panel_estadisticas(partido, analisis['xg'])}"
             "</div>",
             unsafe_allow_html=True,
         )
+        grafica_momentum(partido, analisis["xg"])
+        st.markdown(f"<div class='outs'>{''.join(tiles)}</div>", unsafe_allow_html=True)
         grafica_polymarket(partido, filas, precios)
 
 
@@ -570,7 +653,7 @@ def registrar(partido, filas):
             estado["avisos"].insert(0, {
                 "hora": f"{ahora:%H:%M}", "minuto": partido["minute"], "lado": f["lado"],
                 "partido": dict(partido), "equipo": f["equipo"], "p_modelo": f["p_modelo"],
-                "ask": f["ask"], "edge": f["edge"], "ml": f["ml_mercado"], "porque": f["porque"],
+                "ask": f["ask"], "edge": f["edge"], "ml": f["ml_mercado"], "razones": f["razones"],
             })
             st.toast(f"Buen momento: moneyline de {f['equipo']} · [ver partido](#{ancla(partido)})", icon="✅")
         estado["ultima_senal"][clave] = f["senal"]
@@ -591,7 +674,7 @@ def avisos():
         items.append(
             f"<a class='ev' href='#{ancla(p)}' title='Ir al partido'>"
             f"<span class='t'>{a['minuto']}'</span>{mini_escudo(p, a['lado'])}"
-            f"<div class='tx'><b>{esc(a['equipo'])}</b> · {esc(a['porque'])} "
+            f"<div class='tx'><b>{esc(a['equipo'])}</b> · {esc(' · '.join(a['razones']))}. "
             f"Momio {fmt_ml(a['ml'])}."
             f"<br><span>{a['hora']} · {esc(nombre_corto(p, 'home'))} vs {esc(nombre_corto(p, 'away'))} · "
             "clic para ir al partido</span></div>"
@@ -664,9 +747,22 @@ def seccion_backtest():
         "<table class='tabla'><tr><th>Minuto</th><th>Modelo con xG</th><th>Sin xG</th><th>Mercado</th></tr>"
         f"{filas_br}</table>Señales BUENO simuladas ($1 por señal):"
         "<table class='tabla'><tr><th>Modelo</th><th>Señales</th><th>Aciertos</th><th>Ganancia por $1</th></tr>"
-        f"{fila_senal('Con xG', se['con_xg'])}{fila_senal('Sin xG (el que usa la plataforma)', se['sin_xg'])}</table>"
-        f"{texto_garch} Conclusión: el precio de Polymarket ya refleja lo que pasa en la cancha; ni el xG aproximado "
-        "ni las señales le ganaron en estos partidos. Detalle en notebooks/03_backtest_xg_mercado.ipynb.</div>"
+        f"{fila_senal('Con xG y momentum (el que usa la plataforma)', se['con_xg'])}{fila_senal('Sin xG', se['sin_xg'])}</table>"
+        f"{texto_calibracion(r)}{texto_garch} Conclusión: con el xG por posición y el momentum el modelo mejora "
+        "después del minuto 30 y se adelanta un poco más al mercado, pero el precio de Polymarket sigue pronosticando "
+        "mejor y las señales no le ganaron en estos partidos. Detalle en notebooks/03_backtest_xg_mercado.ipynb.</div>"
+    )
+
+
+def texto_calibracion(r):
+    c = r.get("calibracion")
+    if not c:
+        return ""
+    return (
+        f" Pesos elegidos con los {c['partidos_ajuste']} partidos más antiguos: ritmo previo = "
+        f"{c['elegido']['peso_previo']} min, momentum = {c['elegido']['peso_momentum']}. En los "
+        f"{c['partidos_prueba']} más recientes (no usados para elegirlos), Brier con xG y momentum "
+        f"{c['brier_prueba']['con_xg_momentum']:.3f} contra {c['brier_prueba']['sin_xg']:.3f} sin xG."
     )
 
 
@@ -679,12 +775,13 @@ def metodo():
             "precios. El mercado sabe más que cualquier estadística sobre quién es favorito, así que "
             "el modelo arranca igual que él. Si un partido no tiene mercado, se usan las estadísticas "
             "procesadas del proyecto (goles a favor y en contra por equipo).</li>"
-            "<li><b>xG en vivo (informativo).</b> Cada tiro del comentario de ESPN recibe un xG según desde "
-            "dónde se patea (área chica, centro del área, fuera del área, cabezazo), y se muestra junto con "
-            "los tiros a puerta y las rojas. Se probó usarlo para anticipar goles (mezclando el ritmo previo "
-            "con el xG sin penales), pero en la prueba histórica empeoró el pronóstico frente al modelo sin "
-            "xG, con cualquier peso; por eso no entra en la señal. El «Por qué» indica cuánto daría el modelo "
-            "con xG cuando cambia de forma visible.</li>"
+            "<li><b>xG y momentum.</b> Cada tiro recibe su xG con un modelo propio (regresión logística sobre "
+            "la distancia y el ángulo a la portería, cabezazo y penal) entrenado con 28,009 tiros de 1,004 "
+            "partidos de ESPN de las 10 ligas. El ritmo de goles de cada equipo mezcla lo esperado antes del "
+            "partido con su xG sin penales, y el momentum (presión reciente: xG y córners, con decaimiento de "
+            "unos 5 minutos) lo ladea hacia el equipo que está presionando. Los pesos se eligieron en la "
+            "prueba histórica con los partidos más antiguos. Una roja baja 30% el ritmo del que queda con uno "
+            "menos y sube 20% el del rival.</li>"
             "<li><b>En vivo.</b> Los goles que faltan se modelan como Poisson sobre el tiempo restante y se "
             "suman al marcador. Así se obtiene la probabilidad de cada resultado minuto a minuto.</li>"
             "<li><b>Incertidumbre.</b> El ritmo de goles cambia durante un partido, así que el cálculo se "

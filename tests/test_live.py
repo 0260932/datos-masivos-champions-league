@@ -49,9 +49,38 @@ def test_parse_summary_y_resumen():
     datos = parse_summary(_summary_minimo())
     assert len(datos["tiros"]) == 3  # la falta no cuenta
     final = resumen_hasta(datos)
-    assert final["home"] == {"xg": 0.15, "npxg": 0.15, "tiros": 2, "a_puerta": 1, "rojas": 1}
+    assert {k: final["home"][k] for k in ("xg", "npxg", "tiros", "a_puerta", "rojas")} == {
+        "xg": 0.15, "npxg": 0.15, "tiros": 2, "a_puerta": 1, "rojas": 1}
     assert final["away"]["xg"] == 0.76 and final["away"]["npxg"] == 0.0  # el penal no cuenta en npxG
     assert resumen_hasta(datos, minuto=15)["home"]["tiros"] == 1
+
+
+def test_geometria_del_tiro():
+    from src.models.xg_modelo import geometria
+    cerca, angulo_cerca = geometria(95, 50)   # ~5 m de frente
+    lejos, angulo_lejos = geometria(75, 50)   # ~26 m de frente
+    esquina, angulo_esquina = geometria(99, 95)  # junto al banderin
+    assert cerca < lejos and angulo_cerca > angulo_lejos > angulo_esquina
+
+
+def test_momentum_favorece_al_que_presiona_reciente():
+    from src.live.xg_vivo import momentum_serie, presion
+    datos = {"tiros": [
+        {"lado": "away", "minuto": 10, "xg": 0.30, "penal": False},
+        {"lado": "home", "minuto": 55, "xg": 0.20, "penal": False},
+        {"lado": "home", "minuto": 58, "xg": 0.15, "penal": False},
+    ], "corners": [{"lado": "home", "minuto": 59}], "rojas": []}
+    assert presion(datos, "home", 60) > presion(datos, "away", 60)
+    serie = dict(momentum_serie(datos, 60))
+    assert serie[12] < 0 < serie[60]  # al inicio presiona la visita, al final el local
+
+
+def test_momentum_ladea_el_ritmo():
+    base = {"xg": 0.5, "npxg": 0.5, "rojas": 0}
+    xg = {"home": dict(base, presion=0.9), "away": dict(base, presion=0.1)}
+    lh, la = modelo.ritmo_en_vivo(1.2, 1.2, 40, xg, peso_momentum=1.0)
+    lh0, la0 = modelo.ritmo_en_vivo(1.2, 1.2, 40, xg, peso_momentum=0.0)
+    assert lh > lh0 and la < la0
 
 
 # --------------------------------------------------------------------------------------
@@ -117,14 +146,16 @@ def test_senal_bueno_y_mercado_agitado():
     assert filas[0]["senal"] == "ESPERAR"
 
 
-def test_xg_no_cambia_la_senal_por_default():
-    """El xG se reporta (p_con_xg) pero la probabilidad de la senal es la del modelo sin xG."""
+def test_interruptor_del_xg_en_la_senal():
+    """Con usar_xg la senal usa p_con_xg; sin el, la del modelo sin xG. Ambas se reportan."""
     precios = {"home": {"ask": 0.30}, "draw": {"ask": 0.30}, "away": {"ask": 0.40}}
-    xg = {"home": {"xg": 2.0, "npxg": 2.0, "rojas": 0}, "away": {"xg": 0.1, "npxg": 0.1, "rojas": 0}}
-    filas = tracker.evaluate(_partido(60), (1.3, 1.1), precios, xg)
-    assert filas[0]["p_modelo"] == filas[0]["p_sin_xg"] < filas[0]["p_con_xg"]
+    xg = {"home": {"xg": 2.0, "npxg": 2.0, "rojas": 0, "presion": 0.8},
+          "away": {"xg": 0.1, "npxg": 0.1, "rojas": 0, "presion": 0.1}}
+    sin = tracker.evaluate(_partido(60), (1.3, 1.1), precios, xg, usar_xg=False)
+    assert sin[0]["p_modelo"] == sin[0]["p_sin_xg"] < sin[0]["p_con_xg"]
     con = tracker.evaluate(_partido(60), (1.3, 1.1), precios, xg, usar_xg=True)
     assert con[0]["p_modelo"] == con[0]["p_con_xg"]
+    assert tracker.USAR_XG_EN_SENAL  # la plataforma predice con xG y momentum
 
 
 def test_sin_marcador_no_da_senal():

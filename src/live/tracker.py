@@ -37,7 +37,7 @@ from pathlib import Path
 import requests
 
 from src.ingestion.extract_api_football_data import API_BASE_URL, get_api_token
-from src.live.xg_vivo import xg_en_vivo
+from src.live.xg_vivo import momentum_serie, resumen_hasta, xg_en_vivo, xg_tiro
 from src.models.garch_mercado import volatilidad_token
 from src.processing.polymarket import _parse_lista, _pedir_historial, normalizar_nombre
 from src.live.modelo import (
@@ -459,10 +459,11 @@ COLCHON_EJECUCION = 0.02
 TOPE_APUESTA = 0.05
 # Diferencia (en probabilidad) a partir de la cual el "Por que" menciona el efecto del xG.
 EFECTO_XG_VISIBLE = 0.02
-# El xG en vivo se muestra, pero no entra en la senal: en la prueba historica
-# (src/models/backtest_xg.py, 80 partidos) empeoro el pronostico del resultado
-# frente al modelo sin xG, incluso con el peso del previo ajustado fuera de muestra.
-USAR_XG_EN_SENAL = False
+# La senal usa el xG (modelo por posicion del tiro, src/models/xg_modelo.py) y el
+# momentum, con los pesos calibrados en la prueba historica. Con el xG anterior
+# (por zona del texto) empeoraba el pronostico; con el nuevo queda neutral en la
+# mitad de prueba y mejora despues del minuto 30 (ver docs/decisions.md).
+USAR_XG_EN_SENAL = True
 
 
 def evaluate(partido, lambdas, precios, xg=None, vol=None, usar_xg=None):
@@ -537,7 +538,38 @@ def evaluate(partido, lambdas, precios, xg=None, vol=None, usar_xg=None):
         })
     for f in filas:
         f["porque"] = explain(partido, f, xg)
+        f["razones"] = razones_cortas(partido, f, xg)
     return filas
+
+
+def razones_cortas(partido, f, xg=None):
+    """2 a 4 etiquetas que resumen el "Por que" para leerlo de un vistazo."""
+    if f["senal"] == "CERRADO":
+        return ["Partido terminado"]
+    if f["senal"] == "SIN MARCADOR":
+        return ["Sin marcador en vivo", "Sin señal"]
+    if partido["status"] in ESTADOS_PROGRAMADOS:
+        return ["Previa: el modelo copia al mercado", "Las señales salen en vivo"]
+    razones = [f"{partido['home_goals']}-{partido['away_goals']} al {partido['minute']}'"]
+    if f["ask"] is not None:
+        razones.append(f"Modelo {f['p_modelo']:.0%} vs precio {f['ask']:.0%}")
+    else:
+        razones.append(f"Modelo {f['p_modelo']:.0%}")
+    if xg and abs(f["p_con_xg"] - f["p_sin_xg"]) >= EFECTO_XG_VISIBLE:
+        cambio = (f["p_con_xg"] - f["p_sin_xg"]) * 100
+        razones.append(f"xG {xg['home']['xg']:.1f}–{xg['away']['xg']:.1f} ({cambio:+.0f} pts)")
+    if f["senal"] == "BUENO":
+        razones.append(f"Ventaja {f['edge'] * 100:+.0f} pts (exige {f['umbral'] * 100:.0f})")
+    elif f["senal"] == "ESPERAR":
+        if f["agitado"] and f["edge"] >= f["umbral"]:
+            razones.append("Mercado agitado: esperar")
+        else:
+            razones.append(f"Ventaja {f['edge'] * 100:+.0f} pts, exige {f['umbral'] * 100:.0f}")
+    elif f["senal"] == "NO":
+        razones.append(f"Precio {-f['edge'] * 100:.0f} pts caro")
+    else:
+        razones.append("Sin precio en Polymarket")
+    return razones
 
 
 def _texto_xg(partido, f, xg):
@@ -618,7 +650,7 @@ def analizar_partido(modelo, partido, precios):
     en_juego = partido["status"] in ESTADOS_EN_JUEGO
     if xg is None and en_juego and partido.get("espn_id"):
         try:
-            xg = xg_en_vivo(COMPETICIONES[partido["competicion"]][2], partido["espn_id"])
+            xg = xg_en_vivo(COMPETICIONES[partido["competicion"]][2], partido["espn_id"], partido["minute"])
         except (requests.RequestException, KeyError, ValueError):
             logger.exception("No se pudo leer el xG de %s vs %s", partido["home"], partido["away"])
     vol = {}
@@ -754,18 +786,16 @@ class DemoTracker(Tracker):
     como el modelo con xG se adelanta.
     """
 
-    XG_TIROS = (0.03, 0.06, 0.06, 0.12, 0.12, 0.30, 0.76)  # valores de xg_vivo.XG_POR_ZONA
 
     def __init__(self, sonido, home, away):
         super().__init__(sonido, minutos_previa=0)
         self.partido = {
             "match_id": "demo", "home": home, "away": away, "utc_date": datetime.now(timezone.utc),
             "status": "IN_PLAY", "minute": 0, "home_goals": 0, "away_goals": 0,
-            "xg_demo": {
-                lado: {"xg": 0.0, "npxg": 0.0, "tiros": 0, "a_puerta": 0, "rojas": 0} for lado in ("home", "away")
-            },
+            "xg_demo": None,
         }
         self.fuerza = {"home": random.uniform(0.6, 1.7), "away": random.uniform(0.6, 1.7)}
+        self.datos = {"tiros": [], "corners": [], "rojas": [], "estadisticas": {}}
         self.precio_mercado = None
 
     def step(self):
@@ -774,18 +804,25 @@ class DemoTracker(Tracker):
         lam_h, lam_a = self.modelo.expected_goals(p["home"], p["away"])
         p["minute"] = min(95, p["minute"] + 5)
         for lado, lam in (("home", lam_h), ("away", lam_a)):
-            media_xg = sum(self.XG_TIROS) / len(self.XG_TIROS)
-            tiros_esperados = lam * self.fuerza[lado] * 5 / 95 / media_xg
+            tiros_esperados = lam * self.fuerza[lado] * 5 / 95 / 0.11  # ~0.11 xG por tiro
             for _ in range(int(tiros_esperados) + (random.random() < tiros_esperados % 1)):
-                xg = random.choice(self.XG_TIROS)
-                resumen = p["xg_demo"][lado]
-                resumen["xg"] = round(resumen["xg"] + xg, 2)
-                if xg != 0.76:  # 0.76 = penal (no cuenta para el ritmo futuro)
-                    resumen["npxg"] = round(resumen["npxg"] + xg, 2)
-                resumen["tiros"] += 1
-                resumen["a_puerta"] += random.random() < 0.4
-                if random.random() < xg:
+                # posicion al azar en el ultimo tercio (escala ESPN: porteria rival en X = 100)
+                x, y = random.uniform(76, 98), random.uniform(25, 75)
+                xg = xg_tiro("", x, y)
+                gol = random.random() < xg
+                self.datos["tiros"].append({
+                    "lado": lado, "minuto": p["minute"] - random.randint(0, 4), "instante": None, "xg": xg,
+                    "penal": False, "gol": gol, "a_puerta": gol or random.random() < 0.35, "texto": "", "x": x, "y": y,
+                })
+                if gol:
                     p[f"{lado}_goals"] += 1
+            if random.random() < 0.25 * self.fuerza[lado]:
+                self.datos["corners"].append({"lado": lado, "minuto": p["minute"], "instante": None})
+        posesion = 50 + 25 * (self.fuerza["home"] - self.fuerza["away"]) / 1.1
+        self.datos["estadisticas"] = {"home": {"posesion": round(posesion)}, "away": {"posesion": round(100 - posesion)}}
+        p["xg_demo"] = resumen_hasta(self.datos, referencia=p["minute"])
+        p["xg_demo"]["momentum"] = momentum_serie(self.datos, p["minute"])
+        p["xg_demo"]["estadisticas"] = self.datos["estadisticas"]
         p["status"] = "FINISHED" if p["minute"] >= 95 else "IN_PLAY"
 
         # El "mercado" solo ve el marcador (no las ocasiones) y reacciona con retraso y ruido

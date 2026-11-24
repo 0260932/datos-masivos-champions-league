@@ -344,7 +344,23 @@ Diseño probado: ritmo = (ritmo previo × W + npxG) / (W + minuto), con W = 60 m
 | 240 | 0.375 | 0.490 |
 | 960 | 0.373 | 0.483 |
 
-Entre más pesa el xG, peor pronostica fuera de muestra. Con esta aproximación (solo zona del tiro), el precio del mercado ya incorpora lo que pasa en la cancha. Decisión del equipo: mostrar el xG como información y calcular la señal sin xG (`USAR_XG_EN_SENAL = False`). El "Por qué" indica cuánto daría el modelo con xG cuando cambia de forma visible.
+Entre más pesa el xG por zona, peor pronostica fuera de muestra. Primera decisión del equipo: mostrarlo solo como información.
+
+### 3b. xG por posición del tiro y momentum (versión vigente)
+El equipo pidió que las predicciones usen xG y momentum, como las apps de fútbol (FotMob). ESPN sí da la posición de cada tiro (`fieldPositionX/Y`, portería rival en X = 100), así que se entrenó un **xG propio** (`src/models/xg_modelo.py`): regresión logística sobre distancia y ángulo a la portería (cancha de 105 × 68 m), cabezazo y su interacción con la distancia; penales con su tasa real.
+- Entrenamiento: 28,009 tiros de 1,004 partidos de las 10 ligas, de hace 22 a 150 días (antes del periodo de la prueba histórica, para no reusar tiros). Penales: 79% de 253.
+- Validación en 5,602 tiros no usados: AUC 0.751 (por zona: 0.704; modelos públicos como Opta/FotMob: ~0.78-0.80), log loss 0.285 (por zona 0.301; sin modelo 0.328).
+
+**Momentum** (`src/live/xg_vivo.py`): presión reciente de cada equipo = suma de su xG sin penales y 0.03 por córner, con decaimiento exp(−minutos/8) (vida media ~5.5 min). Se grafica como en FotMob y ladea el ritmo de goles hacia quien presiona: × exp(β·(parte − 0.5)), donde parte es la fracción de la presión reciente de ese equipo.
+
+Calibración (`calibrar()` en `src/models/backtest_xg.py`): W ∈ {30…960} y β ∈ {0, 0.5, 1, 2} se eligen con los 40 partidos más antiguos; se reporta la mitad más reciente.
+
+| | Ajuste (40 antiguos) | Prueba (40 recientes) |
+|---|---|---|
+| Sin xG | 0.403 | **0.444** |
+| xG + momentum (W = 960, β = 0.5) | **0.398** | 0.447 |
+
+En los 80 partidos, con xG y momentum el Brier mejora desde el minuto 30 (minuto 75: 0.288 vs 0.299 sin xG) y empeora al 15; la correlación de adelanto sube de 0.016 a 0.038; las señales aciertan más (53% vs 48%) pero siguen perdiendo (−8¢ vs −7¢ por $1). El mercado sigue siendo el mejor en todos los minutos. Decisión del equipo: **la señal usa xG y momentum** con esos pesos (`USAR_XG_EN_SENAL = True`, `PESO_PREVIO_MIN = 960`, `PESO_MOMENTUM = 0.5`); en la prueba quedó neutral, ya no perjudica como el xG por zona.
 
 ### 4. GARCH del ruido del mercado
 Rendimientos en logit sobre una malla de 5 min (con malla de 1 min, los muchos minutos sin operaciones colapsaban la varianza a ~0). Los saltos de noticia (más de 1 en logit, como un gol) se excluyen del ajuste: tras un gol el GARCH pronosticaba ±43 pts de ruido. El ruido a 2 min (95%, un lado) reemplaza al colchón fijo cuando es mayor a 2 pts, con tope de 10 pts. Si el último movimiento es un salto (>3σ y ≥2 pts), el mercado cuenta como agitado y no se da BUENO en esa vuelta. En la prueba, GARCH **no** pronosticó la volatilidad mejor que una varianza constante (QLIKE 1025 vs 610, 8,147 pronósticos), así que en la práctica casi siempre manda el mínimo de 2 pts.
@@ -353,14 +369,15 @@ Rendimientos en logit sobre una malla de 5 min (con malla de 1 min, los muchos m
 80 partidos cerrados de los últimos 21 días (Champions 18, Premier 18, La Liga 20, Serie A 20, Bundesliga 4; se llegó al tope antes de las demás ligas), 7,730 minutos de juego. En cada minuto solo se usa información anterior; los datos de ESPN entran con 60 s de atraso y la compra se hace al precio del minuto siguiente + 1 pt. Resultados:
 - Brier del resultado final: el mercado fue el mejor en todos los minutos (p. ej. minuto 45: mercado 0.429, modelo sin xG 0.449, con xG 0.483).
 - Adelanto: la correlación entre (modelo − mercado) y el cambio del precio 5 min después fue ~0.02, con y sin xG.
-- Señales BUENO: sin xG, 267 señales, 48% de aciertos, −7¢ por $1; con xG, 420 señales, 41%, −16¢ por $1.
+- Señales BUENO: sin xG, 267 señales, 48% de aciertos, −7¢ por $1; con xG por zona, 420 señales, 41%, −16¢ por $1; con xG por posición y momentum, 304 señales, 53%, −8¢ por $1.
 
 ## Alternativas consideradas
-- Mantener el xG con W = 60 en la señal: descartado por la prueba fuera de muestra.
+- Mantener el xG por zona con W = 60 en la señal: descartado por la prueba fuera de muestra.
+- Usar la API de FotMob (xG y momentum oficiales): no es pública (responde 404 sin su firma), así que todo sale de ESPN.
 - Notificaciones push al celular (ntfy): descartado por el equipo; avisos dentro de la página.
 - Malla de 1 min para el GARCH: descartada (varianza colapsada).
 
 ## Consecuencias
 - La plataforma sigue mostrando señales (postura del equipo), y la metodología muestra que en la prueba histórica no le ganaron al mercado.
-- Un xG mejor (posición exacta del tiro, tipo de asistencia) podría cambiar la conclusión; ESPN no publica esos datos y no se cuenta con otra fuente gratuita en vivo.
+- El xG por posición mejoró la predicción respecto al de zona, pero no lo suficiente para batir al mercado; datos que ESPN no publica (tipo de asistencia, posición del portero, toques en el área) podrían mejorarlo más.
 - La muestra de la prueba es de 80 partidos y 5 ligas; correrla con más días (`--dias 35 --max-partidos 150`) amplía la evidencia.

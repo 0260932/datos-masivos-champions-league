@@ -15,6 +15,11 @@ Para partidos ya jugados de las ligas de la plataforma:
    tarda en publicarse una jugada) y las compras se hacen al precio de
    EJECUCION despues de la senal.
 
+Calibracion del xG y el momentum (fuera de muestra): los pesos del ritmo previo
+(W) y del momentum (beta) se eligen con la mitad mas antigua de los partidos
+(Brier del resultado en los minutos 15-75) y todas las metricas de abajo se
+reportan tambien para la mitad mas reciente, que no se uso para elegirlos.
+
 Metricas (todas fuera de muestra: en cada minuto solo se usa lo anterior):
 a) Adelanto: correlacion entre (modelo - mercado) en t y el cambio del
    precio de t a t+5 / t+10 min; tasa de acierto de la direccion cuando la
@@ -46,6 +51,7 @@ from pathlib import Path
 import numpy as np
 import requests
 
+from src.live import modelo as modelo_vivo
 from src.live.modelo import SNAPSHOT_DIR, fit_lambdas, live_probabilities, ritmo_en_vivo
 from src.live.tracker import (
     COMPETICIONES,
@@ -67,6 +73,8 @@ LADOS = ("home", "draw", "away")
 HORIZONTES_MIN = (5, 10)
 DIFERENCIA_MIN = 0.03
 CORTES_BRIER = (15, 30, 45, 60, 75)
+GRILLA_PESO_PREVIO = (30, 60, 120, 240, 480, 960)
+GRILLA_MOMENTUM = (0.0, 0.5, 1.0, 2.0)
 SPREAD = 0.01  # ask aproximado = precio + 1 pt
 RETRASO_DATOS = timedelta(seconds=60)  # ESPN publica la jugada con atraso
 EJECUCION = timedelta(minutes=1)  # tiempo entre la senal y la compra
@@ -212,8 +220,66 @@ def _instantes(reloj):
     return salida
 
 
+def brier_partidos(partidos, peso_previo=None, peso_momentum=0.0):
+    """Brier medio del resultado final en CORTES_BRIER; peso_previo None = modelo sin xG."""
+    total, n = 0.0, 0
+    for p in partidos:
+        reloj = p["reloj"]
+        previa = [_precio_en(p["precios"][l], reloj["kickoff"]) for l in LADOS]
+        if None in previa:
+            continue
+        lambdas = fit_lambdas(*previa)
+        goles = [t for t in p["datos"]["tiros"] if t["gol"]]
+        for t in _instantes(reloj):
+            minuto = _minuto_juego(reloj, t)
+            if round(minuto) not in CORTES_BRIER or abs(minuto - round(minuto)) > 0.5:
+                continue
+            visto = t - RETRASO_DATOS
+            gl = sum(1 for g in goles if g["lado"] == "home" and g["instante"] <= visto)
+            gv = sum(1 for g in goles if g["lado"] == "away" and g["instante"] <= visto)
+            if peso_previo is None:
+                lam = lambdas
+            else:
+                xg = resumen_hasta(p["datos"], instante=visto, referencia=minuto)
+                lam = ritmo_en_vivo(*lambdas, minuto, xg, peso_previo=peso_previo, peso_momentum=peso_momentum)
+            probs = live_probabilities(*lam, minuto, gl, gv)
+            total += sum((probs[i] - (p["resultado"] == l)) ** 2 for i, l in enumerate(LADOS))
+            n += 1
+    return total / n if n else None
+
+
+def calibrar(partidos):
+    """Elige W y beta con la mitad mas antigua; reporta la mitad mas reciente."""
+    ordenados = sorted(partidos, key=lambda p: p["inicio"])
+    mitad = len(ordenados) // 2
+    ajuste, prueba = ordenados[:mitad], ordenados[mitad:]
+    grilla = []
+    for w in GRILLA_PESO_PREVIO:
+        for b in GRILLA_MOMENTUM:
+            grilla.append({"peso_previo": w, "peso_momentum": b, "brier_ajuste": brier_partidos(ajuste, w, b)})
+    mejor = min(grilla, key=lambda g: g["brier_ajuste"])
+    sin_xg_ajuste = brier_partidos(ajuste)
+    return {
+        "partidos_ajuste": len(ajuste),
+        "partidos_prueba": len(prueba),
+        "corte": ordenados[mitad]["inicio"].isoformat() if prueba else None,
+        "grilla": grilla,
+        "elegido": {"peso_previo": mejor["peso_previo"], "peso_momentum": mejor["peso_momentum"]},
+        "brier_ajuste": {"con_xg_momentum": mejor["brier_ajuste"], "sin_xg": sin_xg_ajuste},
+        "brier_prueba": {
+            "con_xg_momentum": brier_partidos(prueba, mejor["peso_previo"], mejor["peso_momentum"]),
+            "sin_xg": brier_partidos(prueba),
+        },
+        "mejora_en_prueba": None,
+    }
+
+
 def reconstruir(partido):
-    """Filas (una por minuto y resultado) con modelo con/sin xG, precio y precio futuro."""
+    """Filas (una por minuto y resultado) con modelo con/sin xG, precio y precio futuro.
+
+    El modelo "con xG" usa los pesos vigentes en src/live/modelo.py
+    (PESO_PREVIO_MIN y PESO_MOMENTUM); correr() los fija con calibrar().
+    """
     reloj, datos, precios = partido["reloj"], partido["datos"], partido["precios"]
     previa = [_precio_en(precios[l], reloj["kickoff"]) for l in LADOS]
     if None in previa:
@@ -226,7 +292,7 @@ def reconstruir(partido):
         visto = t - RETRASO_DATOS  # lo que ESPN ya habia publicado en t
         gl = sum(1 for g in goles if g["lado"] == "home" and g["instante"] <= visto)
         gv = sum(1 for g in goles if g["lado"] == "away" and g["instante"] <= visto)
-        xg = resumen_hasta(datos, instante=visto)
+        xg = resumen_hasta(datos, instante=visto, referencia=minuto)
         mercado = {l: _precio_en(precios[l], t) for l in LADOS}
         if None in mercado.values():
             continue
@@ -371,6 +437,14 @@ def correr(dias=21, max_partidos=80):
                 partidos.append(partido)
     logger.info("Partidos con ESPN y Polymarket completos: %d", len(partidos))
 
+    calibracion = calibrar(partidos)
+    calibracion["mejora_en_prueba"] = (
+        calibracion["brier_prueba"]["sin_xg"] - calibracion["brier_prueba"]["con_xg_momentum"]
+    )
+    logger.info("Calibracion: %s", {k: v for k, v in calibracion.items() if k != "grilla"})
+    modelo_vivo.PESO_PREVIO_MIN = calibracion["elegido"]["peso_previo"]
+    modelo_vivo.PESO_MOMENTUM = calibracion["elegido"]["peso_momentum"]
+
     por_partido = []
     for partido in partidos:
         filas = reconstruir(partido)
@@ -384,6 +458,7 @@ def correr(dias=21, max_partidos=80):
         "partidos": len(por_partido),
         "por_liga": {c: sum(1 for p in partidos if p["competicion"] == c) for c in COMPETICIONES},
         "minutos_evaluados": len(todas) // 3,
+        "calibracion": calibracion,
         "adelanto": {"con_xg": metricas_adelanto(todas, "p_xg"), "sin_xg": metricas_adelanto(todas, "p_sin")},
         "brier": metricas_brier(por_partido),
         "senales": {"con_xg": metricas_senales(por_partido, "senal_xg"),
