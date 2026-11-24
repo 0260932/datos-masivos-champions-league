@@ -51,6 +51,9 @@ DEMO = {
 COLORES_LADO = {"home": "#4f8cff", "draw": "#a3afc7", "away": "#ffb23f"}
 # Rango de la grafica -> (horas hacia atras o None = todo, fidelidad en minutos)
 RANGOS = {"Partido": (None, 1), "6H": (6, 1), "1D": (24, 5), "1S": (24 * 7, 60), "Todo": (None, 180)}
+# Intervalo (min) de la malla de la grafica por rango: suficientes puntos para ver los
+# movimientos, pocos para que la curva no se vea serruchada.
+PASO_GRAFICA = {"Partido": 2, "6H": 4, "1D": 15, "1S": 90, "Todo": 360}
 
 st.set_page_config(page_title="Moneyline en vivo", page_icon="⚽", layout="wide")
 
@@ -552,21 +555,39 @@ def serie_mercado(partido, precios, lado):
     return pd.DataFrame([{"hora": h["hora"], "p": h["ask"]} for h in vistos])
 
 
+def suavizar(serie, paso_min):
+    """Serie (hora, p) en malla regular de paso_min y sin el parpadeo de compra/venta.
+
+    El precio minuto a minuto de Polymarket brinca entre la mejor oferta de compra
+    y la de venta; graficado tal cual se ve serruchado. Se toma el ultimo precio de
+    cada intervalo, se aplica una mediana movil de 3 puntos (quita picos sueltos
+    sin desplazar los cambios reales, como un gol) y el ultimo punto conserva el
+    precio exacto.
+    """
+    if len(serie) < 3:
+        return serie
+    s = serie.sort_values("hora").set_index("hora")["p"]
+    malla = s.resample(f"{paso_min}min").last().ffill()
+    suave = malla.rolling(3, min_periods=1).median()
+    suave.iloc[-1] = s.iloc[-1]
+    return suave.reset_index()
+
+
 def grafica_polymarket(partido, filas, precios):
     orden = ("home", "draw", "away")
     nombres = {lado: ("Empate" if lado == "draw" else nombre_corto(partido, lado)) for lado in orden}
+    paso = PASO_GRAFICA[rango]
     partes = []
     for lado in orden:
-        mercado = serie_mercado(partido, precios, lado)
+        mercado = suavizar(serie_mercado(partido, precios, lado), paso)
         if not mercado.empty:
             mercado["serie"], mercado["fuente"] = nombres[lado], "Mercado"
             partes.append(mercado)
         modelo_hist = [h for h in estado["historial"].get(partido["match_id"], []) if h["lado"] == lado]
-        if modelo_hist:
-            partes.append(pd.DataFrame([
-                {"hora": h["hora"], "p": h["p_modelo"], "serie": nombres[lado], "fuente": "Modelo"}
-                for h in modelo_hist
-            ]))
+        if len(modelo_hist) >= 2:
+            modelo_df = suavizar(pd.DataFrame([{"hora": h["hora"], "p": h["p_modelo"]} for h in modelo_hist]), paso)
+            modelo_df["serie"], modelo_df["fuente"] = nombres[lado], "Modelo"
+            partes.append(modelo_df)
     if not partes:
         return
     datos = pd.concat(partes, ignore_index=True)
@@ -604,10 +625,10 @@ def grafica_polymarket(partido, filas, precios):
         color=alt.Color("serie:N", scale=colores, legend=None),
     )
     linea_mercado = base.transform_filter(alt.datum.fuente == "Mercado").mark_line(
-        interpolate="basis", strokeWidth=2.6, strokeCap="round", strokeJoin="round"
+        interpolate="monotone", strokeWidth=2.6, strokeCap="round", strokeJoin="round"
     )
     linea_modelo = base.transform_filter(alt.datum.fuente == "Modelo").mark_line(
-        interpolate="basis", strokeDash=[5, 4], strokeWidth=1.6, opacity=0.9
+        interpolate="monotone", strokeDash=[5, 4], strokeWidth=1.6, opacity=0.9
     )
     # separa las etiquetas finales que quedan encimadas (minimo 6 puntos entre una y otra)
     ultimo = ultimo.sort_values("p").copy()
