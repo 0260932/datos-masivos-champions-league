@@ -290,6 +290,15 @@ equipos ("Bayern Munich" vs "FC Bayern München"; 9 nombres unificados).
 Por eso los cortes difieren un poco de los del notebook (que supera la
 base en 2 de 4), aunque el promedio coincide.
 
+### 7. Postura del proyecto: la plataforma muestra señales de apuesta
+Decisión del equipo (18-nov-2026): la plataforma en vivo muestra las señales
+BUENO / ESPERAR / NO y la apuesta sugerida, con su sustento ("Por qué",
+rango del modelo, ventaja exigida y ganancia esperada). El aviso académico de
+`src/processing/polymarket.py` se mantiene y aplica a ese módulo: su
+`prob_referencia` es un modelo ingenuo con historia de finales, distinto del
+modelo en vivo anclado al mercado. El dashboard conserva la nota de que las
+señales son una referencia del modelo, no una garantía.
+
 ## Alternativas consideradas
 - Umbral fijo elegido por el usuario (5 pts): descartado porque no tiene
   sustento; la incertidumbre real cambia con el minuto y el marcador.
@@ -305,3 +314,70 @@ base en 2 de 4), aunque el promedio coincide.
   esperados (Clásico: 3.5–2.4) y el modelo reacciona menos a cada gol.
 - ESPN es una fuente pública no oficial: si cambia su formato, el
   partido queda sin marcador y sin señal (no con datos falsos).
+---
+
+## Plataforma v2: más ligas, xG en vivo, GARCH, avisos clicables y prueba histórica
+
+## Decisión
+Segunda versión de la plataforma en vivo (`src/live/`, `src/models/`, `streamlit_app.py`), pedida por el equipo para "predecir en vez de reaccionar":
+- **10 ligas** (Champions, Premier, La Liga, Serie A, Bundesliga, Ligue 1, Eredivisie, Primeira Liga, Championship, Brasileirão): todas en el plan gratuito de football-data.org, en ESPN y con mercado moneyline en Polymarket (tags `ucl`, `premier-league`, `la-liga`, `sea`, `bundesliga`, `ligue-1`, `ere`, `primeira-liga`, `efl-championship`, `brazil-serie-a`). Vista "Todas las ligas" por defecto.
+- **xG en vivo** (`src/live/xg_vivo.py`) desde el comentario jugada por jugada de ESPN.
+- **GARCH(1,1)** del precio de Polymarket (`src/models/garch_mercado.py`, librería `arch`).
+- **Avisos clicables** (ancla `#partido-<id>`) y link para compartir cada partido (`?liga=PL&partido=ID`).
+- **XGBoost fuera de las tarjetas**: se documenta en "Cómo decide la plataforma" con su tabla de validación.
+- **Prueba histórica** (`src/models/backtest_xg.py`, `notebooks/03_backtest_xg_mercado.ipynb`).
+
+## Razón y decisiones de diseño
+### 1. Calendario y marcador por separado
+Con 10 ligas, pedir el calendario a football-data.org en cada vuelta rebasaría el límite de 10 solicitudes/min. El calendario se pide cada 10 min por liga; el marcador, minuto, tiros y rojas salen de ESPN en cada vuelta.
+
+### 2. xG aproximado por zona de tiro
+ESPN no publica xG, pero su comentario describe cada tiro. Valores por zona (pie / cabeza), del orden de los modelos públicos de xG: penal 0.76; muy cerca 0.45 / 0.30; área chica 0.30 / 0.20; centro del área 0.12 / 0.08; costados del área 0.06 / 0.05; ángulo difícil 0.04 / 0.03; fuera del área 0.03 / 0.02; sin ubicación 0.06. Para el ritmo futuro se usa **xG sin penales**: un penal no anticipa ocasiones y, si entró, ya está en el marcador. Validado contra un partido real (Hull 2-0 Brighton: 11 y 15 tiros, igual que las estadísticas de ESPN).
+
+### 3. El xG se muestra pero no entra en la señal
+Diseño probado: ritmo = (ritmo previo × W + npxG) / (W + minuto), con W = 60 min, más ×0.70 / ×1.20 por roja. En la prueba histórica empeoró el pronóstico. Para no descartarlo por un mal peso, W se eligió con los 40 partidos más antiguos y se evaluó en los 40 más recientes (Brier en minutos 15, 30, 45, 60 y 75):
+
+| W (min) | Ajuste | Prueba |
+|---|---|---|
+| sin xG | 0.374 | **0.481** |
+| 60 | 0.386 | 0.514 |
+| 240 | 0.375 | 0.490 |
+| 960 | 0.373 | 0.483 |
+
+Entre más pesa el xG por zona, peor pronostica fuera de muestra. Primera decisión del equipo: mostrarlo solo como información.
+
+### 3b. xG por posición del tiro y momentum (versión vigente)
+El equipo pidió que las predicciones usen xG y momentum, como las apps de fútbol (FotMob). ESPN sí da la posición de cada tiro (`fieldPositionX/Y`, portería rival en X = 100), así que se entrenó un **xG propio** (`src/models/xg_modelo.py`): regresión logística sobre distancia y ángulo a la portería (cancha de 105 × 68 m), cabezazo y su interacción con la distancia; penales con su tasa real.
+- Entrenamiento: 28,009 tiros de 1,004 partidos de las 10 ligas, de hace 22 a 150 días (antes del periodo de la prueba histórica, para no reusar tiros). Penales: 79% de 253.
+- Validación en 5,602 tiros no usados: AUC 0.751 (por zona: 0.704; modelos públicos como Opta/FotMob: ~0.78-0.80), log loss 0.285 (por zona 0.301; sin modelo 0.328).
+
+**Momentum** (`src/live/xg_vivo.py`): presión reciente de cada equipo = suma de su xG sin penales y 0.03 por córner, con decaimiento exp(−minutos/8) (vida media ~5.5 min). Se grafica como en FotMob y ladea el ritmo de goles hacia quien presiona: × exp(β·(parte − 0.5)), donde parte es la fracción de la presión reciente de ese equipo.
+
+Calibración (`calibrar()` en `src/models/backtest_xg.py`): W ∈ {30…960} y β ∈ {0, 0.5, 1, 2} se eligen con los 40 partidos más antiguos; se reporta la mitad más reciente.
+
+| | Ajuste (40 antiguos) | Prueba (40 recientes) |
+|---|---|---|
+| Sin xG | 0.403 | **0.444** |
+| xG + momentum (W = 960, β = 0.5) | **0.398** | 0.447 |
+
+En los 80 partidos, con xG y momentum el Brier mejora desde el minuto 30 (minuto 75: 0.288 vs 0.299 sin xG) y empeora al 15; la correlación de adelanto sube de 0.016 a 0.038; las señales aciertan más (53% vs 48%) pero siguen perdiendo (−8¢ vs −7¢ por $1). El mercado sigue siendo el mejor en todos los minutos. Decisión del equipo: **la señal usa xG y momentum** con esos pesos (`USAR_XG_EN_SENAL = True`, `PESO_PREVIO_MIN = 960`, `PESO_MOMENTUM = 0.5`); en la prueba quedó neutral, ya no perjudica como el xG por zona.
+
+### 4. GARCH del ruido del mercado
+Rendimientos en logit sobre una malla de 5 min (con malla de 1 min, los muchos minutos sin operaciones colapsaban la varianza a ~0). Los saltos de noticia (más de 1 en logit, como un gol) se excluyen del ajuste: tras un gol el GARCH pronosticaba ±43 pts de ruido. El ruido a 2 min (95%, un lado) reemplaza al colchón fijo cuando es mayor a 2 pts, con tope de 10 pts. Si el último movimiento es un salto (>3σ y ≥2 pts), el mercado cuenta como agitado y no se da BUENO en esa vuelta. En la prueba, GARCH **no** pronosticó la volatilidad mejor que una varianza constante (QLIKE 1025 vs 610, 8,147 pronósticos), así que en la práctica casi siempre manda el mínimo de 2 pts.
+
+### 5. Prueba histórica sin ventajas injustas
+80 partidos cerrados de los últimos 21 días (Champions 18, Premier 18, La Liga 20, Serie A 20, Bundesliga 4; se llegó al tope antes de las demás ligas), 7,730 minutos de juego. En cada minuto solo se usa información anterior; los datos de ESPN entran con 60 s de atraso y la compra se hace al precio del minuto siguiente + 1 pt. Resultados:
+- Brier del resultado final: el mercado fue el mejor en todos los minutos (p. ej. minuto 45: mercado 0.429, modelo sin xG 0.449, con xG 0.483).
+- Adelanto: la correlación entre (modelo − mercado) y el cambio del precio 5 min después fue ~0.02, con y sin xG.
+- Señales BUENO: sin xG, 267 señales, 48% de aciertos, −7¢ por $1; con xG por zona, 420 señales, 41%, −16¢ por $1; con xG por posición y momentum, 304 señales, 53%, −8¢ por $1.
+
+## Alternativas consideradas
+- Mantener el xG por zona con W = 60 en la señal: descartado por la prueba fuera de muestra.
+- Usar la API de FotMob (xG y momentum oficiales): no es pública (responde 404 sin su firma), así que todo sale de ESPN.
+- Notificaciones push al celular (ntfy): descartado por el equipo; avisos dentro de la página.
+- Malla de 1 min para el GARCH: descartada (varianza colapsada).
+
+## Consecuencias
+- La plataforma sigue mostrando señales (postura del equipo), y la metodología muestra que en la prueba histórica no le ganaron al mercado.
+- El xG por posición mejoró la predicción respecto al de zona, pero no lo suficiente para batir al mercado; datos que ESPN no publica (tipo de asistencia, posición del portero, toques en el área) podrían mejorarlo más.
+- La muestra de la prueba es de 80 partidos y 5 ligas; correrla con más días (`--dias 35 --max-partidos 150`) amplía la evidencia.

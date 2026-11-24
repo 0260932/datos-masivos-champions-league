@@ -37,7 +37,8 @@ from pathlib import Path
 import requests
 
 from src.ingestion.extract_api_football_data import API_BASE_URL, get_api_token
-from src.models.xgboost_resultado import PrediccionResultado
+from src.live.xg_vivo import momentum_serie, resumen_hasta, xg_en_vivo, xg_tiro
+from src.models.garch_mercado import volatilidad_token
 from src.processing.polymarket import _parse_lista, _pedir_historial, normalizar_nombre
 from src.live.modelo import (
     StrengthModel,
@@ -45,6 +46,7 @@ from src.live.modelo import (
     kelly_fraction,
     live_probabilities,
     live_probability_range,
+    ritmo_en_vivo,
     name_similarity,
     to_american,
 )
@@ -57,12 +59,26 @@ LOGS_DIR.mkdir(parents=True, exist_ok=True)
 
 GAMMA_EVENTS_URL = "https://gamma-api.polymarket.com/events"
 _SESION = requests.Session()
-# codigo de football-data.org -> (nombre, tag de Polymarket, liga en ESPN)
+# codigo de football-data.org -> (nombre, tag de Polymarket, liga en ESPN, emblema)
+# Todas estan en el plan gratuito de football-data.org y tienen mercado moneyline
+# por partido en Polymarket.
+_EMBLEMA = "https://crests.football-data.org/{}.png"
 COMPETICIONES = {
-    "CL": ("Champions League", "ucl", "uefa.champions"),
-    "PD": ("La Liga", "la-liga", "esp.1"),
-    "PL": ("Premier League", "premier-league", "eng.1"),
+    "CL": ("Champions League", "ucl", "uefa.champions", _EMBLEMA.format("CL")),
+    "PL": ("Premier League", "premier-league", "eng.1", _EMBLEMA.format("PL")),
+    "PD": ("La Liga", "la-liga", "esp.1", _EMBLEMA.format("laliga")),
+    "SA": ("Serie A", "sea", "ita.1", _EMBLEMA.format("c111")),
+    "BL1": ("Bundesliga", "bundesliga", "ger.1", _EMBLEMA.format("BL1")),
+    "FL1": ("Ligue 1", "ligue-1", "fra.1", _EMBLEMA.format("FL1")),
+    "DED": ("Eredivisie", "ere", "ned.1", _EMBLEMA.format("ED")),
+    "PPL": ("Primeira Liga", "primeira-liga", "por.1", _EMBLEMA.format("PPL")),
+    "ELC": ("Championship", "efl-championship", "eng.2", _EMBLEMA.format("ELC")),
+    "BSA": ("Brasileirão", "brazil-serie-a", "bra.1", _EMBLEMA.format("bsa")),
 }
+# El calendario de football-data cambia poco: se pide cada 10 min por liga para no
+# pasar del limite de 10 solicitudes/min del plan gratuito con 10 ligas.
+CALENDARIO_TTL_SEG = 600
+_CALENDARIO = {}  # competicion -> (cuando se pidio, partidos)
 # Marcador en vivo: el plan gratuito de football-data.org no actualiza los
 # partidos en juego a tiempo (se queda en TIMED), asi que el marcador y el
 # minuto se toman del scoreboard publico de ESPN (sin llave).
@@ -116,6 +132,7 @@ def fetch_espn_scores(competicion: str, fechas):
             equipos = {c["homeAway"]: c for c in comp["competitors"]}
             estado = e["status"]["type"]
             eventos.append({
+                "espn_id": e.get("id"),
                 "utc_date": datetime.fromisoformat(e["date"].replace("Z", "+00:00")),
                 "home_names": [equipos["home"]["team"].get(k) for k in ("displayName", "shortDisplayName", "name")],
                 "away_names": [equipos["away"]["team"].get(k) for k in ("displayName", "shortDisplayName", "name")],
@@ -154,6 +171,7 @@ def apply_espn(partidos, eventos):
             continue
         p["home_goals"], p["away_goals"] = mejor["home_goals"], mejor["away_goals"]
         p["fuente_marcador"] = "ESPN"
+        p["espn_id"] = mejor["espn_id"]
         if mejor["state"] == "post":
             p["status"], p["minute"] = "FINISHED", 95
         else:
@@ -162,26 +180,37 @@ def apply_espn(partidos, eventos):
     return partidos
 
 
+def fetch_calendar(competicion: str):
+    """Partidos de ayer a 8 dias de la competicion (football-data.org), con cache de 10 min."""
+    ahora = datetime.now(timezone.utc)
+    guardado = _CALENDARIO.get(competicion)
+    if guardado and (ahora - guardado[0]).total_seconds() < CALENDARIO_TTL_SEG:
+        return guardado[1]
+    params = {
+        "dateFrom": (ahora - timedelta(days=1)).date().isoformat(),
+        "dateTo": (ahora + timedelta(days=8)).date().isoformat(),
+    }
+    response = requests.get(
+        f"{API_BASE_URL}/competitions/{competicion}/matches",
+        headers={"X-Auth-Token": get_api_token()}, params=params, timeout=20,
+    )
+    response.raise_for_status()
+    partidos = response.json().get("matches", [])
+    _CALENDARIO[competicion] = (ahora, partidos)
+    return partidos
+
+
 def fetch_live_matches(minutos_previa: int, competicion: str = "CL"):
     """Partidos de la competicion en juego (y los que empiezan en <= minutos_previa).
 
-    Calendario, nombres y escudos: football-data.org. Marcador y minuto en
-    vivo: ESPN. Un partido que ya empezo y del que ninguna fuente trae
-    marcador queda como SIN_DATOS (no se supone 0-0).
+    Calendario, nombres y escudos: football-data.org (cache de 10 min).
+    Marcador y minuto en vivo: ESPN, en cada llamada. Un partido que ya
+    empezo y del que ninguna fuente trae marcador queda como SIN_DATOS (no
+    se supone 0-0).
     """
     ahora = datetime.now(timezone.utc)
-    params = {
-        "dateFrom": (ahora - timedelta(days=1)).date().isoformat(),
-        "dateTo": (ahora + timedelta(days=1, minutes=minutos_previa)).date().isoformat(),
-    }
-    url = f"{API_BASE_URL}/competitions/{competicion}/matches"
-    response = requests.get(
-        url, headers={"X-Auth-Token": get_api_token()}, params=params, timeout=20
-    )
-    response.raise_for_status()
-
     partidos = []
-    for m in response.json().get("matches", []):
+    for m in fetch_calendar(competicion):
         status = m.get("status")
         utc_date = datetime.fromisoformat(m["utcDate"].replace("Z", "+00:00"))
         ya_empezo = utc_date <= ahora <= utc_date + VENTANA_EN_JUEGO
@@ -199,6 +228,7 @@ def fetch_live_matches(minutos_previa: int, competicion: str = "CL"):
         score = m.get("score", {}).get("fullTime", {}) or {}
         partidos.append({
             "match_id": m.get("id"),
+            "competicion": competicion,
             "home": m.get("homeTeam", {}).get("name"),
             "away": m.get("awayTeam", {}).get("name"),
             "home_short": m.get("homeTeam", {}).get("shortName"),
@@ -211,15 +241,27 @@ def fetch_live_matches(minutos_previa: int, competicion: str = "CL"):
             "home_goals": score.get("home") or 0,
             "away_goals": score.get("away") or 0,
             "fuente_marcador": "football-data.org",
+            "espn_id": None,
         })
 
-    if any(p["status"] != "TIMED" or p["utc_date"] <= ahora for p in partidos):
+    if any(p["utc_date"] <= ahora for p in partidos):
         try:
             fechas = {(ahora - timedelta(hours=12)).date(), ahora.date()}
             apply_espn(partidos, fetch_espn_scores(competicion, sorted(fechas)))
         except (requests.RequestException, KeyError, ValueError):
             logger.exception("No se pudo leer el marcador en vivo de ESPN")
     return partidos
+
+
+def fetch_all_live_matches(minutos_previa: int, competiciones=None):
+    """fetch_live_matches de varias ligas; una liga que falla no detiene a las demas."""
+    partidos = []
+    for competicion in competiciones or COMPETICIONES:
+        try:
+            partidos.extend(fetch_live_matches(minutos_previa, competicion))
+        except requests.RequestException:
+            logger.exception("No se pudo leer el calendario de %s", competicion)
+    return sorted(partidos, key=lambda p: p["utc_date"])
 
 
 # ---------------------------------------------------------------------------
@@ -409,34 +451,51 @@ def match_lambdas(modelo, partido, precios):
 # Evaluacion y avisos
 # ---------------------------------------------------------------------------
 
-# Ventaja que se exige ademas de la incertidumbre del modelo: el precio puede
-# moverse un poco entre que sale la senal y que se compra (deslizamiento).
+# Ventaja minima por ejecucion: el precio puede moverse un poco entre que sale la
+# senal y que se compra. Si el GARCH del mercado pronostica mas ruido, se usa ese.
 COLCHON_EJECUCION = 0.02
-# Tope de la apuesta sugerida (fraccion de la banca): el modelo no ve rojas,
-# lesiones ni penales, asi que nunca se sugiere mas que esto en un solo resultado.
+# Tope de la apuesta sugerida (fraccion de la banca): el modelo no ve lesiones,
+# cambios ni penales, asi que nunca se sugiere mas que esto en un solo resultado.
 TOPE_APUESTA = 0.05
+# Diferencia (en probabilidad) a partir de la cual el "Por que" menciona el efecto del xG.
+EFECTO_XG_VISIBLE = 0.02
+# La senal usa el xG (modelo por posicion del tiro, src/models/xg_modelo.py) y el
+# momentum, con los pesos calibrados en la prueba historica. Con el xG anterior
+# (por zona del texto) empeoraba el pronostico; con el nuevo queda neutral en la
+# mitad de prueba y mejora despues del minuto 30 (ver docs/decisions.md).
+USAR_XG_EN_SENAL = True
 
 
-def evaluate(partido, lambdas, precios, xgb=None):
+def evaluate(partido, lambdas, precios, xg=None, vol=None, usar_xg=None):
     """Una fila por resultado (local / empate / visita) con la senal y su justificacion.
 
-    La ventaja minima la pone el modelo: es lo que separa su probabilidad
-    central de su escenario mas bajo (ritmo de goles +-20%), mas un
-    colchon de ejecucion. BUENO = incluso el escenario bajo del modelo
-    queda arriba del precio de compra por al menos el colchon.
+    lambdas: goles esperados del partido completo antes del inicio (anclados al mercado).
+    xg: resumen de xg_vivo.resumen_hasta (xG, tiros, rojas por equipo) o None.
+    vol: {lado: garch_mercado.volatilidad} o None.
+    usar_xg: si el xG mueve la probabilidad de la senal (default USAR_XG_EN_SENAL).
 
-    xgb: prediccion del XGBoost del proyecto antes del partido. Se reporta
-    como segunda opinion y no cambia la senal (ver xgboost_metricas.json).
+    La ventaja minima la pone el modelo: lo que separa su probabilidad central
+    de su escenario mas bajo (ritmo de goles +-20%) mas el ruido del mercado
+    (GARCH, minimo 2 pts). BUENO = incluso el escenario bajo queda arriba del
+    precio de compra por al menos ese ruido, y el mercado no esta agitado.
     """
+    usar_xg = USAR_XG_EN_SENAL if usar_xg is None else usar_xg
     minuto, gl, gv = partido["minute"], partido["home_goals"], partido["away_goals"]
-    probs = live_probabilities(*lambdas, minuto, gl, gv)
-    bajos, altos = live_probability_range(*lambdas, minuto, gl, gv)
+    con_xg_lambdas = ritmo_en_vivo(*lambdas, minuto, xg)
+    vivas = con_xg_lambdas if usar_xg else lambdas
+    probs = live_probabilities(*vivas, minuto, gl, gv)
+    con_xg = live_probabilities(*con_xg_lambdas, minuto, gl, gv)
+    sin_xg = live_probabilities(*lambdas, minuto, gl, gv)
+    bajos, altos = live_probability_range(*vivas, minuto, gl, gv)
     previas = live_probabilities(*lambdas, 0, 0, 0)
     nombres = {"home": partido["home"], "draw": "Empate", "away": partido["away"]}
     filas = []
     for i, lado in enumerate(("home", "draw", "away")):
         p, p_bajo, ask = probs[i], bajos[i], precios.get(lado, {}).get("ask")
-        umbral = (p - p_bajo) + COLCHON_EJECUCION
+        v = (vol or {}).get(lado) or {}
+        ruido = max(COLCHON_EJECUCION, v.get("ruido") or 0.0)
+        umbral = (p - p_bajo) + ruido
+        agitado = bool(v.get("agitado"))
         if partido.get("status") == "FINISHED":
             senal, edge = "CERRADO", None  # ya no se puede entrar
         elif partido.get("status") == SIN_DATOS:
@@ -445,7 +504,7 @@ def evaluate(partido, lambdas, precios, xgb=None):
             senal, edge = "SIN MERCADO", None
         else:
             edge = p - ask
-            if edge >= umbral:
+            if edge >= umbral and not agitado:
                 senal = "BUENO"
             elif edge > 0:
                 senal = "ESPERAR"
@@ -459,10 +518,15 @@ def evaluate(partido, lambdas, precios, xgb=None):
             "p_bajo": p_bajo,
             "p_alto": altos[i],
             "p_previa": previas[i],
-            "p_xgb": None if xgb is None else xgb[lado],
+            "p_sin_xg": sin_xg[i],
+            "p_con_xg": con_xg[i],
+            "usa_xg": usar_xg,
             "ask": ask,
             "edge": edge,
             "umbral": umbral,
+            "ruido": ruido,
+            "ruido_metodo": v.get("metodo"),
+            "agitado": agitado,
             "senal": senal,
             # ganancia esperada por cada $1 apostado comprando al precio de compra
             "ev": p / ask - 1 if con_precio else None,
@@ -473,11 +537,64 @@ def evaluate(partido, lambdas, precios, xgb=None):
             "kelly_25": min(TOPE_APUESTA, 0.25 * kelly_fraction(p_bajo, ask)) if senal == "BUENO" else 0.0,
         })
     for f in filas:
-        f["porque"] = explain(partido, f)
+        f["porque"] = explain(partido, f, xg)
+        f["razones"] = razones_cortas(partido, f, xg)
     return filas
 
 
-def explain(partido, f):
+def razones_cortas(partido, f, xg=None):
+    """2 a 4 etiquetas que resumen el "Por que" para leerlo de un vistazo."""
+    if f["senal"] == "CERRADO":
+        return ["Partido terminado"]
+    if f["senal"] == "SIN MARCADOR":
+        return ["Sin marcador en vivo", "Sin señal"]
+    if partido["status"] in ESTADOS_PROGRAMADOS:
+        return ["Previa: el modelo copia al mercado", "Las señales salen en vivo"]
+    razones = [f"{partido['home_goals']}-{partido['away_goals']} al {partido['minute']}'"]
+    if f["ask"] is not None:
+        razones.append(f"Modelo {f['p_modelo']:.0%} vs precio {f['ask']:.0%}")
+    else:
+        razones.append(f"Modelo {f['p_modelo']:.0%}")
+    if xg and abs(f["p_con_xg"] - f["p_sin_xg"]) >= EFECTO_XG_VISIBLE:
+        cambio = (f["p_con_xg"] - f["p_sin_xg"]) * 100
+        razones.append(f"xG {xg['home']['xg']:.1f}–{xg['away']['xg']:.1f} ({cambio:+.0f} pts)")
+    if f["senal"] == "BUENO":
+        razones.append(f"Ventaja {f['edge'] * 100:+.0f} pts (exige {f['umbral'] * 100:.0f})")
+    elif f["senal"] == "ESPERAR":
+        if f["agitado"] and f["edge"] >= f["umbral"]:
+            razones.append("Mercado agitado: esperar")
+        else:
+            razones.append(f"Ventaja {f['edge'] * 100:+.0f} pts, exige {f['umbral'] * 100:.0f}")
+    elif f["senal"] == "NO":
+        razones.append(f"Precio {-f['edge'] * 100:.0f} pts caro")
+    else:
+        razones.append("Sin precio en Polymarket")
+    return razones
+
+
+def _texto_xg(partido, f, xg):
+    """Frase sobre el xG si cambia la probabilidad de forma visible; si no, cadena vacia."""
+    if not xg or abs(f["p_con_xg"] - f["p_sin_xg"]) < EFECTO_XG_VISIBLE:
+        return ""
+    local = partido.get("home_short") or partido["home"]
+    visita = partido.get("away_short") or partido["away"]
+    rojas = ""
+    if xg["home"]["rojas"] or xg["away"]["rojas"]:
+        rojas = f" (rojas: {local} {xg['home']['rojas']}, {visita} {xg['away']['rojas']})"
+    sube = f["p_con_xg"] > f["p_sin_xg"]
+    if not f["usa_xg"]:
+        return (
+            f" El xG va {local} {xg['home']['xg']:.2f} – {xg['away']['xg']:.2f} {visita}{rojas}; con xG el modelo "
+            f"daría {f['p_con_xg']:.0%}, pero el xG no entra en la señal: en la prueba histórica empeoró el pronóstico."
+        )
+    return (
+        f" El xG va {local} {xg['home']['xg']:.2f} – {xg['away']['xg']:.2f} {visita}{rojas}: "
+        f"{'sube' if sube else 'baja'} la probabilidad de {f['p_sin_xg']:.0%} (solo marcador) a {f['p_modelo']:.0%}, "
+        f"porque {'se esperan' if sube else 'se esperan menos'} goles de quien genera las ocasiones antes de que lleguen."
+    )
+
+
+def explain(partido, f, xg=None):
     """Texto corto con el sustento de la senal, en terminos del partido."""
     equipo = "el empate" if f["lado"] == "draw" else f["equipo"]
     if f["senal"] == "CERRADO":
@@ -490,51 +607,79 @@ def explain(partido, f):
     if partido["status"] in ESTADOS_PROGRAMADOS:
         return (
             "Antes del partido el modelo toma el precio de Polymarket como punto de partida, así que no "
-            "hay ventaja. Las señales aparecen en vivo, cuando un gol o el reloj cambian la probabilidad "
-            "y el mercado tarda en ajustarse."
+            "hay ventaja. Las señales aparecen en vivo, cuando las ocasiones (xG), un gol o el reloj "
+            "cambian la probabilidad y el mercado tarda en ajustarse."
         )
     contexto = (
         f"Antes del partido {equipo} tenía {f['p_previa']:.0%}. Con {partido['home_goals']}-"
         f"{partido['away_goals']} al {partido['minute']}' y ~{max(0, 95 - partido['minute'])} min por jugar, "
         f"el modelo calcula {f['p_modelo']:.0%} (entre {f['p_bajo']:.0%} y {f['p_alto']:.0%} según el ritmo de goles)."
+        + _texto_xg(partido, f, xg)
     )
     if f["senal"] == "SIN MERCADO":
         return contexto + " No hay precio en Polymarket para comparar."
     precio = f" Polymarket lo vende en {f['ask']:.0%}."
+    exigencia = f"{f['umbral'] * 100:.1f} pts (incertidumbre del modelo + {f['ruido'] * 100:.1f} pts de ruido del mercado)"
     if f["senal"] == "BUENO":
         return contexto + precio + (
             f" Aun en el escenario bajo ({f['p_bajo']:.0%}) el precio queda abajo: ventaja de "
-            f"{f['edge'] * 100:+.1f} pts contra {f['umbral'] * 100:.1f} pts exigidos. Ganancia esperada "
+            f"{f['edge'] * 100:+.1f} pts contra {exigencia} exigidos. Ganancia esperada "
             f"{f['ev'] * 100:+.0f}¢ por cada $1 ({f['ev_bajo'] * 100:+.0f}¢ en el escenario bajo)."
         )
     if f["senal"] == "ESPERAR":
+        if f["agitado"] and f["edge"] >= f["umbral"]:
+            return contexto + precio + (
+                f" La ventaja ({f['edge'] * 100:+.1f} pts) alcanza, pero el precio acaba de dar un salto fuera de "
+                "lo normal (GARCH): se espera una vuelta para confirmar que no es ruido."
+            )
         return contexto + precio + (
-            f" El modelo está arriba del precio por {f['edge'] * 100:.1f} pts, pero se exigen "
-            f"{f['umbral'] * 100:.1f} pts: en el escenario bajo ({f['p_bajo']:.0%}) no conviene."
+            f" El modelo está arriba del precio por {f['edge'] * 100:.1f} pts, pero se exigen {exigencia}: "
+            f"en el escenario bajo ({f['p_bajo']:.0%}) no conviene."
         )
     return contexto + precio + f" Pagarías {-f['edge'] * 100:.1f} pts más de lo que el modelo cree que vale."
+
+
+def analizar_partido(modelo, partido, precios):
+    """Todo lo que la plataforma calcula de un partido: lambdas, xG, ruido del mercado y senales.
+
+    Lo usan el tracker de terminal y el dashboard. Fallas de ESPN o del
+    historial de Polymarket no detienen el analisis: ese dato queda vacio.
+    """
+    lambdas, fuente = match_lambdas(modelo, partido, precios)
+    xg = partido.get("xg_demo")
+    en_juego = partido["status"] in ESTADOS_EN_JUEGO
+    if xg is None and en_juego and partido.get("espn_id"):
+        try:
+            xg = xg_en_vivo(COMPETICIONES[partido["competicion"]][2], partido["espn_id"], partido["minute"])
+        except (requests.RequestException, KeyError, ValueError):
+            logger.exception("No se pudo leer el xG de %s vs %s", partido["home"], partido["away"])
+    vol = {}
+    if en_juego:
+        for lado, info in precios.items():
+            if info.get("token_id"):
+                try:
+                    vol[lado] = volatilidad_token(info["token_id"], price_history)
+                except requests.RequestException:
+                    logger.exception("Sin historial para el GARCH de %s", partido["home"])
+    filas = evaluate(partido, lambdas, precios, xg, vol)
+    return {"lambdas": lambdas, "fuente": fuente, "xg": xg, "vol": vol, "filas": filas}
 
 
 def _fmt_ml(v):
     return "  -  " if v is None else f"{v:+d}"
 
 
-def print_match(partido, filas, lambdas, fuente="estadisticas", metricas_xgb=None):
+def print_match(partido, filas, lambdas, fuente="estadisticas", xg=None):
     print(
         f"\n{partido['home']} {partido['home_goals']}-{partido['away_goals']} {partido['away']}"
         f"   min {partido['minute']}'  [{partido['status']}]"
         f"   goles esperados: {lambdas[0]:.2f}-{lambdas[1]:.2f} ({fuente})"
     )
-    if filas and filas[0]["p_xgb"] is not None:
-        validacion = ""
-        if metricas_xgb:
-            validacion = (
-                f"; exactitud validada {metricas_xgb['exactitud']:.0%} vs "
-                f"{metricas_xgb['exactitud_linea_base']:.0%} de {metricas_xgb['linea_base']}"
-            )
+    if xg:
         print(
-            f"  XGBoost del proyecto (antes del partido): L {filas[0]['p_xgb']:.0%} · "
-            f"E {filas[1]['p_xgb']:.0%} · V {filas[2]['p_xgb']:.0%}{validacion}; no cambia la senal"
+            f"  xG en vivo: {xg['home']['xg']:.2f} - {xg['away']['xg']:.2f}"
+            f"   tiros a puerta: {xg['home']['a_puerta']} - {xg['away']['a_puerta']}"
+            f"   rojas: {xg['home']['rojas']} - {xg['away']['rojas']}"
         )
     print(
         f"  {'Resultado':<26}{'Modelo':>8}{'Rango':>13}{'Ask':>7}{'Edge':>8}{'Exige':>7}"
@@ -598,20 +743,18 @@ class Tracker:
         self.modelo = StrengthModel()
         self.competicion = competicion
         self.polymarket = PolymarketMoneyline(competicion)
-        self.xgb = PrediccionResultado()
         self.sonido = sonido
         self.minutos_previa = minutos_previa
         self.ultima_senal = {}  # (match_id, lado) -> senal, para avisar solo en cambios
 
     def analyze(self, partido, precios):
-        """(lambdas, fuente, filas) del partido; no imprime ni guarda nada."""
-        lambdas, fuente = match_lambdas(self.modelo, partido, precios)
-        xgb = self.xgb.predict(partido["home"], partido["away"])
-        return lambdas, fuente, evaluate(partido, lambdas, precios, xgb)
+        """analizar_partido() del partido; no imprime ni guarda nada."""
+        return analizar_partido(self.modelo, partido, precios)
 
     def process(self, partido, precios):
-        lambdas, fuente, filas = self.analyze(partido, precios)
-        print_match(partido, filas, lambdas, fuente, self.xgb.metricas)
+        analisis = self.analyze(partido, precios)
+        filas = analisis["filas"]
+        print_match(partido, filas, analisis["lambdas"], analisis["fuente"], analisis["xg"])
         for f in filas:
             clave = (partido["match_id"], f["lado"])
             if f["senal"] == "BUENO" and self.ultima_senal.get(clave) != "BUENO":
@@ -635,14 +778,24 @@ class Tracker:
 
 
 class DemoTracker(Tracker):
-    """Partido simulado: avanza 5 minutos por vuelta y el mercado reacciona con retraso."""
+    """Partido simulado: avanza 5 minutos por vuelta, con tiros y xG.
+
+    Cada equipo tiene una fuerza "real" que no coincide con la esperada antes
+    del partido; sus ocasiones (xG) la revelan antes que los goles. El
+    "mercado" simulado solo reacciona al marcador y con retraso, asi que se ve
+    como el modelo con xG se adelanta.
+    """
+
 
     def __init__(self, sonido, home, away):
         super().__init__(sonido, minutos_previa=0)
         self.partido = {
             "match_id": "demo", "home": home, "away": away, "utc_date": datetime.now(timezone.utc),
             "status": "IN_PLAY", "minute": 0, "home_goals": 0, "away_goals": 0,
+            "xg_demo": None,
         }
+        self.fuerza = {"home": random.uniform(0.6, 1.7), "away": random.uniform(0.6, 1.7)}
+        self.datos = {"tiros": [], "corners": [], "rojas": [], "estadisticas": {}}
         self.precio_mercado = None
 
     def step(self):
@@ -650,19 +803,34 @@ class DemoTracker(Tracker):
         p = self.partido
         lam_h, lam_a = self.modelo.expected_goals(p["home"], p["away"])
         p["minute"] = min(95, p["minute"] + 5)
-        tramo = 5 / 95
-        if random.random() < lam_h * tramo:
-            p["home_goals"] += 1
-        if random.random() < lam_a * tramo:
-            p["away_goals"] += 1
+        for lado, lam in (("home", lam_h), ("away", lam_a)):
+            tiros_esperados = lam * self.fuerza[lado] * 5 / 95 / 0.11  # ~0.11 xG por tiro
+            for _ in range(int(tiros_esperados) + (random.random() < tiros_esperados % 1)):
+                # posicion al azar en el ultimo tercio (escala ESPN: porteria rival en X = 100)
+                x, y = random.uniform(76, 98), random.uniform(25, 75)
+                xg = xg_tiro("", x, y)
+                gol = random.random() < xg
+                self.datos["tiros"].append({
+                    "lado": lado, "minuto": p["minute"] - random.randint(0, 4), "instante": None, "xg": xg,
+                    "penal": False, "gol": gol, "a_puerta": gol or random.random() < 0.35, "texto": "", "x": x, "y": y,
+                })
+                if gol:
+                    p[f"{lado}_goals"] += 1
+            if random.random() < 0.25 * self.fuerza[lado]:
+                self.datos["corners"].append({"lado": lado, "minuto": p["minute"], "instante": None})
+        posesion = 50 + 25 * (self.fuerza["home"] - self.fuerza["away"]) / 1.1
+        self.datos["estadisticas"] = {"home": {"posesion": round(posesion)}, "away": {"posesion": round(100 - posesion)}}
+        p["xg_demo"] = resumen_hasta(self.datos, referencia=p["minute"])
+        p["xg_demo"]["momentum"] = momentum_serie(self.datos, p["minute"])
+        p["xg_demo"]["estadisticas"] = self.datos["estadisticas"]
         p["status"] = "FINISHED" if p["minute"] >= 95 else "IN_PLAY"
 
-        # El "mercado" sigue al modelo con retraso y ruido, para que aparezcan oportunidades
+        # El "mercado" solo ve el marcador (no las ocasiones) y reacciona con retraso y ruido
         justo = live_probabilities(lam_h, lam_a, p["minute"], p["home_goals"], p["away_goals"])
         if self.precio_mercado is None:
             self.precio_mercado = list(justo)
         self.precio_mercado = [
-            min(0.99, max(0.01, 0.6 * viejo + 0.4 * nuevo + random.uniform(-0.03, 0.03)))
+            min(0.99, max(0.01, 0.6 * viejo + 0.4 * nuevo + random.uniform(-0.02, 0.02)))
             for viejo, nuevo in zip(self.precio_mercado, justo)
         ]
         precios = {
@@ -679,9 +847,9 @@ class DemoTracker(Tracker):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Tracker en vivo de moneyline (Champions, La Liga, Premier League)")
+    parser = argparse.ArgumentParser(description="Tracker en vivo de moneyline (10 ligas, ver COMPETICIONES)")
     parser.add_argument("--competicion", choices=list(COMPETICIONES), default="CL",
-                        help="CL = Champions League, PD = La Liga, PL = Premier League (default CL)")
+                        help="Codigo de football-data.org: " + ", ".join(f"{c} = {v[0]}" for c, v in COMPETICIONES.items()) + " (default CL)")
     parser.add_argument("--intervalo", type=int, default=30, help="Segundos entre actualizaciones (default 30)")
     parser.add_argument("--previa", type=int, default=30,
                         help="Incluir partidos que empiezan en los proximos N minutos (default 30)")

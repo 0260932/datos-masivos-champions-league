@@ -1,0 +1,33 @@
+{
+  "variables": [
+    "distancia",
+    "angulo",
+    "cabezazo",
+    "distancia_x_cabezazo"
+  ],
+  "intercepto": -1.4042452775529854,
+  "coeficientes": [
+    -0.08334347342248097,
+    1.388259467340678,
+    -0.41726493985179985,
+    -0.10422483717583125
+  ],
+  "xg_penal": 0.7905138339920948,
+  "entrenamiento": {
+    "desde_dias": 150,
+    "hasta_dias": 22,
+    "partidos": 1004,
+    "tiros": 28009,
+    "goles": 2786,
+    "penales": 253
+  },
+  "validacion": {
+    "tiros_prueba": 5602,
+    "log_loss": 0.28540345360171654,
+    "brier": 0.08073570110752946,
+    "auc": 0.7505929748135215,
+    "log_loss_base": 0.32816378103429394,
+    "log_loss_xg_por_zona": 0.30138196388124505,
+    "auc_xg_por_zona": 0.7036991765851366
+  }
+}

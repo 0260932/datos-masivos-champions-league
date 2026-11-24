@@ -38,6 +38,20 @@ MAX_GOLES_RESTANTES = 10
 # Cuanto puede variar el ritmo de goles de cada equipo respecto al esperado
 # (segundos tiempos con mas goles, el que pierde arriesga): +-20%.
 VARIACION_RITMO = 0.20
+# xG en vivo: el ritmo previo al partido (anclado al mercado) pesa como
+# PESO_PREVIO_MIN minutos de juego frente al xG observado (ver ritmo_en_vivo).
+# Elegido en la prueba historica (src/models/backtest_xg.py, calibrar()) con la
+# mitad mas antigua de los partidos: el precio del mercado pesa mucho.
+PESO_PREVIO_MIN = 960
+# Efecto de una roja en el ritmo de goles: el que queda con uno menos x0.70,
+# el rival x1.20 (orden de magnitud reportado en estudios de tarjetas rojas).
+EFECTO_ROJA = (0.70, 1.20)
+# Momentum: cuanto se ladea el ritmo hacia el equipo que presiona. Con toda la
+# presion reciente de un lado, su ritmo se multiplica por exp(PESO_MOMENTUM / 2)
+# y el del rival se divide por lo mismo. 0 = el momentum no cuenta. Se elige con
+# la prueba historica (src/models/backtest_xg.py).
+PESO_MOMENTUM = 0.5
+PRESION_MINIMA = 0.05  # con menos presion total no se ladea nada
 
 # Los nombres se normalizan con las mismas reglas y alias que el pipeline de
 # Polymarket del proyecto (src/processing/polymarket.py), para que un equipo
@@ -191,6 +205,41 @@ def live_probabilities(lam_home, lam_away, minute, home_goals, away_goals):
                 p_away += pi * pj
     total = p_home + p_draw + p_away
     return p_home / total, p_draw / total, p_away / total
+
+
+def ritmo_en_vivo(lam_home, lam_away, minute, xg=None, peso_previo=None, peso_momentum=None):
+    """Lambdas (de partido completo) con el ritmo actualizado por el xG y las rojas.
+
+    Mezcla bayesiana por equipo: el ritmo de goles por minuto que traia antes
+    del partido (anclado al mercado) pesa como PESO_PREVIO_MIN minutos de
+    juego, y el xG acumulado sin penales (npxG) pesa los minutos jugados:
+        ritmo = (lambda_previo / 95 * W + npxG) / (W + minuto)
+    Se excluyen los penales porque no anticipan ocasiones futuras (y si
+    entraron, el gol ya esta en el marcador).
+    Asi un equipo que genera ocasiones claras sube su probabilidad de anotar
+    antes de que llegue el gol. Cada roja multiplica el ritmo del equipo con
+    uno menos por EFECTO_ROJA[0] y el del rival por EFECTO_ROJA[1].
+    Se devuelven lambdas de partido completo para usarlas igual que antes en
+    live_probabilities (que ya escala por el tiempo restante).
+    """
+    if not xg:
+        return lam_home, lam_away
+    peso_previo = PESO_PREVIO_MIN if peso_previo is None else peso_previo
+    peso_momentum = PESO_MOMENTUM if peso_momentum is None else peso_momentum
+    jugados = max(0.0, min(float(minute), MINUTOS_PARTIDO))
+    presion_total = xg["home"].get("presion", 0.0) + xg["away"].get("presion", 0.0)
+
+    def ajustar(lam, lado, rival):
+        previo = lam / MINUTOS_PARTIDO
+        npxg = xg[lado].get("npxg", xg[lado]["xg"])
+        ritmo = (previo * peso_previo + npxg) / (peso_previo + jugados)
+        ritmo *= EFECTO_ROJA[0] ** xg[lado]["rojas"] * EFECTO_ROJA[1] ** xg[rival]["rojas"]
+        if peso_momentum and presion_total >= PRESION_MINIMA:
+            parte = xg[lado].get("presion", 0.0) / presion_total  # 0 a 1
+            ritmo *= math.exp(peso_momentum * (parte - 0.5))
+        return ritmo * MINUTOS_PARTIDO
+
+    return ajustar(lam_home, "home", "away"), ajustar(lam_away, "away", "home")
 
 
 def live_probability_range(lam_home, lam_away, minute, home_goals, away_goals, variacion=VARIACION_RITMO):

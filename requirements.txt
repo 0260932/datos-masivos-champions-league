@@ -10,3 +10,4 @@ pytest
 pyarrow
 streamlit
 altair
+arch
